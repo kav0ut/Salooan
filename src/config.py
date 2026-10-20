@@ -27,3 +27,21 @@ VOLUME_WINDOW = 30
 
 # Random seed for reproducibility
 RANDOM_SEED = 42
+
+# Binance API
+BINANCE_URL = "https://api.binance.com/api/v3/klines"  # Use https://api.binance.us for Binance.US
+# Raw schema columns as per Binance kline response
+COLUMNS = [
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_asset_volume",
+    "number_of_trades",
+    "taker_buy_base_asset_volume",
+    "taker_buy_quote_asset_volume",
+    "ignore"
+]
