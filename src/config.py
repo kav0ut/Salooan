@@ -20,6 +20,8 @@ EQUITY_ASSETS = ["SPY", "ARKK"]
 START_DATE = "2023-01-01"
 HORIZONS_DAYS = [7, 14]
 CONFIDENCE_LEVELS = [0.90, 0.95, 0.99]
+# Tolerance for as-of lookup when matching forward returns (in days)
+TARGET_ASOF_TOLERANCE_DAYS = 5
 
 # Window sizes for technical indicators
 VOLATILITY_WINDOW = 30
