@@ -1,9 +1,3 @@
-"""
-Unit tests for feature engineering (Milestone 3).
-
-All tests use small synthetic DataFrames without making live API calls
-or reading actual production data.
-"""
 import math
 import os
 from typing import List
@@ -30,9 +24,6 @@ from src.features import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Volatility matches hand-computed sample standard deviation
-# ---------------------------------------------------------------------------
 def test_volatility_matches_hand_computed():
     df = pd.DataFrame(
         {
@@ -55,9 +46,6 @@ def test_volatility_matches_hand_computed():
     assert "vol_test" not in df.columns
 
 
-# ---------------------------------------------------------------------------
-# Test 2: Rolling features match an independent naive loop implementation
-# ---------------------------------------------------------------------------
 def test_rolling_features_match_naive_loop():
     rng = np.random.RandomState(42)
     n = 50
@@ -117,9 +105,6 @@ def test_rolling_features_match_naive_loop():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 3: First W-1 rows are NaN and row W-1 has a value
-# ---------------------------------------------------------------------------
 def test_first_w_minus_1_rows_are_nan():
     w = 7
     n = 15
@@ -144,9 +129,6 @@ def test_first_w_minus_1_rows_are_nan():
     assert pd.notna(res_vol_vol["dvol"].iloc[w - 1])
 
 
-# ---------------------------------------------------------------------------
-# Test 4: Dollar volume uses close * volume, not raw volume
-# ---------------------------------------------------------------------------
 def test_dollar_volume_uses_close_times_volume():
     # Constant volume, increasing price
     df = pd.DataFrame(
@@ -165,9 +147,6 @@ def test_dollar_volume_uses_close_times_volume():
     assert result["dvol"].iloc[2] != pytest.approx(100.0)
 
 
-# ---------------------------------------------------------------------------
-# Test 5: No-lookahead (truncation) test
-# ---------------------------------------------------------------------------
 def test_no_lookahead_truncation():
     n = 60
     rng = np.random.RandomState(123)
@@ -198,9 +177,6 @@ def test_no_lookahead_truncation():
         )
 
 
-# ---------------------------------------------------------------------------
-# Test 6: Future perturbation test
-# ---------------------------------------------------------------------------
 def test_future_perturbation_does_not_affect_past():
     n = 50
     t = 35
@@ -236,9 +212,6 @@ def test_future_perturbation_does_not_affect_past():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 7: Features ignore target columns
-# ---------------------------------------------------------------------------
 def test_features_ignore_targets():
     n = 45
     df = pd.DataFrame(
@@ -271,9 +244,6 @@ def test_features_ignore_targets():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 8: Asset isolation
-# ---------------------------------------------------------------------------
 def test_asset_isolation(monkeypatch):
     n = 40
     df_a = pd.DataFrame(
@@ -327,9 +297,6 @@ def test_asset_isolation(monkeypatch):
     pd.testing.assert_frame_equal(feat_a_1, feat_a_2)
 
 
-# ---------------------------------------------------------------------------
-# Test 9: Equity weekend gaps: window counts rows, not calendar days
-# ---------------------------------------------------------------------------
 def test_equity_weekend_gaps_window_counts_rows():
     # 7 business days spanning 9 or 10 calendar days
     bdate_range = pd.bdate_range("2023-01-02", periods=7)  # Mon to Wed next week
@@ -360,9 +327,6 @@ def test_equity_weekend_gaps_window_counts_rows():
     assert pd.notna(result["dvol_5d"].iloc[5])
 
 
-# ---------------------------------------------------------------------------
-# Test 10: Rows with NaN targets are kept, only incomplete windows dropped
-# ---------------------------------------------------------------------------
 def test_nan_targets_kept_only_incomplete_windows_dropped(monkeypatch):
     n = 40
     # 40 rows: with window=30, the first 29 rows will be incomplete, leaving 11 rows.
@@ -397,9 +361,6 @@ def test_nan_targets_kept_only_incomplete_windows_dropped(monkeypatch):
     assert table[VOLUME_COL].notna().all()
 
 
-# ---------------------------------------------------------------------------
-# Test 11: Immutability and determinism
-# ---------------------------------------------------------------------------
 def test_input_not_mutated_and_build_is_deterministic():
     n = 35
     df = pd.DataFrame(
@@ -422,9 +383,6 @@ def test_input_not_mutated_and_build_is_deterministic():
     pd.testing.assert_frame_equal(result_1, result_2)
 
 
-# ---------------------------------------------------------------------------
-# Test 12: Atomic save_features
-# ---------------------------------------------------------------------------
 def test_save_features_atomic(tmp_path):
     dest_file = os.path.join(tmp_path, "test_features.parquet")
     df = pd.DataFrame(

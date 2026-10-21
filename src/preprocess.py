@@ -1,11 +1,3 @@
-"""
-Module responsible for cleaning and preprocessing raw asset data.
-
-Reads raw parquet data from data/raw/, enforces schemas and dtypes,
-calculates daily log returns, computes forward returns (targets) over
-specified calendar-day horizons using as-of lookups, and writes
-processed parquet files to data/processed/.
-"""
 import os
 import warnings
 from typing import List, Optional, Tuple

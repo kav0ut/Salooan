@@ -1,6 +1,3 @@
-"""
-Configuration constants for the Salooan project.
-"""
 import os
 
 # Project root directory (two levels up from this file)
@@ -11,6 +8,7 @@ RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+FEATURES_PATH = os.path.join(PROCESSED_DIR, "features.parquet")
 
 # Asset definitions
 CRYPTO_ASSETS = ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOGEUSDT"]
@@ -20,6 +18,7 @@ EQUITY_ASSETS = ["SPY", "ARKK"]
 START_DATE = "2023-01-01"
 HORIZONS_DAYS = [7, 14]
 CONFIDENCE_LEVELS = [0.90, 0.95, 0.99]
+TEST_FRACTION = 0.2
 # Tolerance for as-of lookup when matching forward returns (in days)
 TARGET_ASOF_TOLERANCE_DAYS = 5
 

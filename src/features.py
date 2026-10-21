@@ -1,10 +1,3 @@
-"""
-Module responsible for feature engineering from preprocessed data.
-
-Calculates rolling volatility and rolling average dollar volume features
-for each asset, merges all assets into a single feature table, and saves
-the resulting dataset to data/processed/features.parquet.
-"""
 import os
 from typing import List, Optional
 

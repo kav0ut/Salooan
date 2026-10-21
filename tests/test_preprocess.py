@@ -1,9 +1,3 @@
-"""
-Unit tests for data preprocessing and target generation (Milestone 2).
-
-All tests use small synthetic DataFrames without making API calls or reading
-actual production data.
-"""
 import os
 import warnings
 from typing import List
@@ -23,9 +17,6 @@ from src.preprocess import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Log returns against hand-computed values and NaN on first row
-# ---------------------------------------------------------------------------
 def test_add_log_return_hand_computed():
     # Synthetic closes: 100.0, 105.0 (+5%), 94.5 (-10% from 105)
     df = pd.DataFrame(
@@ -51,9 +42,6 @@ def test_add_log_return_hand_computed():
     assert "log_return" not in df.columns
 
 
-# ---------------------------------------------------------------------------
-# Test 2: Clean data - duplicates, sorting, invalid closes, immutability
-# ---------------------------------------------------------------------------
 def test_clean_filters_sorts_and_preserves_input():
     raw_data = {
         "date": [
@@ -94,9 +82,6 @@ def test_clean_filters_sorts_and_preserves_input():
     assert cleaned["volume"].dtype == "float64"
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Gap detection warns for crypto, but not for equity weekends
-# ---------------------------------------------------------------------------
 def test_find_gaps_crypto_warning_and_equity_tolerance():
     # Data with a weekend gap: Friday to Monday (missing Sat, Sun: 2 missing days)
     equity_df = pd.DataFrame(
@@ -143,9 +128,6 @@ def test_find_gaps_crypto_warning_and_equity_tolerance():
         assert len(user_warnings) == 0
 
 
-# ---------------------------------------------------------------------------
-# Test 4: Crypto-style series - target_7d equals exact shift of 7 rows
-# ---------------------------------------------------------------------------
 def test_crypto_target_7d_equals_7_rows_ahead():
     num_days = 15
     dates = pd.date_range("2023-01-01", periods=num_days, freq="D")
@@ -167,9 +149,6 @@ def test_crypto_target_7d_equals_7_rows_ahead():
         assert pd.isna(result["target_7d"].iloc[i])
 
 
-# ---------------------------------------------------------------------------
-# Test 5: Equity-style series with weekend gaps - as-of uses right earlier close
-# ---------------------------------------------------------------------------
 def test_equity_forward_return_asof_weekend_gaps():
     # Business days over 2 weeks (Monday 2023-01-02 to Friday 2023-01-13)
     b_dates = pd.bdate_range("2023-01-02", "2023-01-13")
@@ -213,9 +192,6 @@ def test_equity_forward_return_asof_weekend_gaps():
     assert res_7d["target_7d"].iloc[4] == pytest.approx(expected_fri, rel=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# Test 6: Last N days are NaN and tolerance stops stale match
-# ---------------------------------------------------------------------------
 def test_forward_return_end_nan_and_tolerance_cutoff():
     # Part 1: Last N calendar days must have target = NaN
     df_recent = pd.DataFrame(
@@ -257,9 +233,6 @@ def test_forward_return_end_nan_and_tolerance_cutoff():
     assert res_relaxed["target_7d"].iloc[0] == pytest.approx(expected_return, rel=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# Test 7: Target at t depends only on closes at t and t+N (no path leakage)
-# ---------------------------------------------------------------------------
 def test_target_depends_only_on_endpoints_no_path_leakage():
     dates = pd.date_range("2023-01-01", periods=15, freq="D")
 
@@ -287,9 +260,6 @@ def test_target_depends_only_on_endpoints_no_path_leakage():
     assert res_base["target_7d"].iloc[0] == res_mod["target_7d"].iloc[0]
 
 
-# ---------------------------------------------------------------------------
-# Test 8: Running process_asset twice gives identical output (idempotence)
-# ---------------------------------------------------------------------------
 def test_process_asset_idempotence(tmp_path, monkeypatch):
     raw_dir = tmp_path / "raw"
     processed_dir = tmp_path / "processed"

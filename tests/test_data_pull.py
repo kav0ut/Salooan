@@ -1,6 +1,3 @@
-"""
-Tests for the data_pull module.
-"""
 import os
 from datetime import datetime, timezone
 from unittest.mock import patch, Mock
@@ -186,7 +183,6 @@ def test_fetch_binance_no_duplicate_across_pages(mock_dt, mock_get):
     assert open_times == list(range(1672531200000, 1672531200000 + 1500 * 86400000, 86400000))
 
 
-# === Equity tests ===
 @patch("src.data_pull.yf.download")
 def test_fetch_equity_schema_and_dtypes(mock_download):
     # Mock yfinance to return a DataFrame with two days of data

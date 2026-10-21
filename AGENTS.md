@@ -38,7 +38,7 @@ These rules apply to every coding session in this repo, not just this milestone:
 - **Add tests for new logic.** Any new function with real logic gets a `pytest` test in `tests/`. Use small synthetic DataFrames, never live API calls.
 - **Guard against data leakage.** Features for a given date may only use data up to and including that date. Any feature or target change must be checked against this, and the no-lookahead test must keep passing.
 - **Surface inconsistencies immediately.** If something doesn't line up with this file, the milestone files, or existing code (conflicting requirements, stale docs, design drift), stop and flag it with a suggested fix instead of silently working around it.
-- **Write for a learner.** Clear, readable code. No docstrings on functions or methods. Use short inline # comments only where the reason behind a step isn't obvious. Small single-purpose functions with type hints and descriptive names. No clever one-liners that hide the logic.
+- **Write for a learner.** Clear, readable code. No docstrings anywhere (function, class or module), and no decorative divider or banner comments (such as # -----). Use short inline # comments only where the reason behind a step isn't obvious. Small single-purpose functions with type hints and descriptive names. No clever one-liners that hide the logic.
 - **Settings live in `src/config.py`.** Asset lists, paths, horizons, confidence levels, window sizes and the start date are never hardcoded elsewhere.
 
 ## Code Architecture
