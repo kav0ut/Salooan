@@ -57,8 +57,8 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`data_pull.py`** - ingestion. Binance public klines (daily, paginated 1000 per request) for crypto; `yfinance` for equities/ETFs. Drops today's unfinished candle, supports incremental refresh (fetch only after the last saved candle), writes atomically (temp file then rename). Output: `data/raw/<asset>.parquet`
 - **`preprocess.py`** - cleans raw data, enforces dtypes, computes log returns, builds the forward-return target for horizon N. Output: `data/processed/`
 - **`features.py`** - rolling volatility (std of log returns) and rolling average dollar volume per asset; merges all assets into one feature table. Stretch: max drawdown, correlation with BTC
-- **`split.py`** - chronological train/test split with an N-day gap. Never shuffle
-- **`baselines.py`** - static haircut and per-asset historical-quantile baselines
+- **`split.py`** - prepares horizon modeling table (drops rows with NaN target), chronological train/test split by unique dates with an N-day purge gap. Never shuffle
+- **`baselines.py`** - static (pooled training targets alpha-quantile) and historical (per-asset training targets alpha-quantile) baselines fit on training set only, predicting quantile returns aligned with test set
 - **`metrics.py`** - hand-implemented pinball loss and coverage (breach rate) in numpy
 - **`train.py`** - gradient boosting (XGBoost or LightGBM) with quantile objective; saves models with joblib to `models/`
 - **`predict.py`** - latest-day features -> predicted quantile return -> haircut -> max loan
@@ -88,6 +88,14 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **No lookahead**: the feature at date t uses only data up to and including t. Features never read `target_*` columns
 - **Rows kept in feature table**: drops only rows with incomplete rolling windows. Rows with NaN targets are kept for app prediction; dropped only when building training sets
 - **Feature table schema**: `asset, asset_class, date, volatility_<W>d, avg_dollar_volume_<W>d, target_7d, target_14d`, sorted by asset then date. Column names come from config (`VOLATILITY_COL = f"volatility_{VOLATILITY_WINDOW}d"`, `VOLUME_COL = f"avg_dollar_volume_{VOLUME_WINDOW}d"`)
+- **One global date cutoff for all assets**: the test set is the most recent `TEST_FRACTION` (0.2) of unique dates in the modeling table, not rows. Crypto and equities have different calendars, and assets crash on the same days, so splitting each asset separately would leak market-wide information from the test period into training
+- **Purge gap**: a training row only counts as clean if `date + N days < test_start`. Rows in the last N days before `test_start` are dropped from training (purged) because their targets are computed from prices inside the test period. The gap depends on horizon N
+- **Test rows**: rows with `date >= test_start`. Their features look backwards into the training period, which is valid and expected
+- **Split methodology**: no shuffling, no validation set in v1. Hyperparameters stay fixed
+- **Rows with NaN target**: dropped when building the modeling table for a horizon (`prepare_horizon_table`). The latest feature row per asset is kept for prediction in M5
+- **Baselines fit on train only**: `static` is the alpha-quantile of pooled training targets (alpha = 1 - confidence); `historical` is the alpha-quantile of each asset's own training targets
+- **Baseline output**: predicted quantile return (negative number means loss), aligned with test rows. Haircut conversion (`-q`, floored at 0) happens in M5
+- **High-confidence coverage limitation**: with a 20% test period and overlapping N-day returns, high confidence levels (99%) have very few expected breaches, making coverage at 99% noisy
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -119,7 +127,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0, 1, 2, and 3 are complete. Milestone 3 is ready to commit (`feat: add rolling volatility and volume features`). Milestone 4 (chronological split with gap, baselines) is next; its spec will be in `MILESTONES/MILESTONE_4.md`.
+Milestones 0-3 complete and committed. Milestone 4 is ready to commit (`feat: add time-based split and baselines`). Milestone 5 (quantile boosting training and haircut prediction) is next; its spec will be in `MILESTONES/MILESTONE_5.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 

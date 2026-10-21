@@ -7,6 +7,7 @@ from src.config import (
     CRYPTO_ASSETS,
     EQUITY_ASSETS,
     FEATURE_COLUMNS,
+    FEATURES_PATH,
     HORIZONS_DAYS,
     PROCESSED_DIR,
     VOLATILITY_COL,
@@ -101,7 +102,7 @@ def build_feature_table(assets: Optional[List[str]] = None) -> pd.DataFrame:
 
 def save_features(df: pd.DataFrame, dest_path: Optional[str] = None) -> None:
     if dest_path is None:
-        dest_path = os.path.join(PROCESSED_DIR, "features.parquet")
+        dest_path = FEATURES_PATH
     dest_dir = os.path.dirname(dest_path)
     if dest_dir:
         os.makedirs(dest_dir, exist_ok=True)
@@ -114,7 +115,7 @@ def main() -> None:
     print("Building feature table...")
     features_df = build_feature_table()
     save_features(features_df)
-    print(f"Saved feature table with {len(features_df)} rows to {os.path.join(PROCESSED_DIR, 'features.parquet')}\n")
+    print(f"Saved feature table with {len(features_df)} rows to {FEATURES_PATH}\n")
 
     target_cols = [f"target_{h}d" for h in HORIZONS_DAYS]
 
