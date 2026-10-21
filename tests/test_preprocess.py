@@ -27,11 +27,6 @@ from src.preprocess import (
 # Test 1: Log returns against hand-computed values and NaN on first row
 # ---------------------------------------------------------------------------
 def test_add_log_return_hand_computed():
-    """Verify log return calculation against hand-computed values.
-
-    Log return formula: ln(close_t / close_{t-1}).
-    The first row has no previous close, so its log return must be NaN.
-    """
     # Synthetic closes: 100.0, 105.0 (+5%), 94.5 (-10% from 105)
     df = pd.DataFrame(
         {
@@ -60,10 +55,6 @@ def test_add_log_return_hand_computed():
 # Test 2: Clean data - duplicates, sorting, invalid closes, immutability
 # ---------------------------------------------------------------------------
 def test_clean_filters_sorts_and_preserves_input():
-    """Verify clean() sorts by date, drops duplicates (keeping first),
-    removes non-positive or NaN closes, enforces float64 dtypes,
-    and does not mutate input.
-    """
     raw_data = {
         "date": [
             "2023-01-05",  # Out of order
@@ -107,9 +98,6 @@ def test_clean_filters_sorts_and_preserves_input():
 # Test 3: Gap detection warns for crypto, but not for equity weekends
 # ---------------------------------------------------------------------------
 def test_find_gaps_crypto_warning_and_equity_tolerance():
-    """Verify find_gaps() raises UserWarning for crypto gaps,
-    but does not warn for expected equity calendar gaps (weekends/holidays).
-    """
     # Data with a weekend gap: Friday to Monday (missing Sat, Sun: 2 missing days)
     equity_df = pd.DataFrame(
         {
@@ -159,9 +147,6 @@ def test_find_gaps_crypto_warning_and_equity_tolerance():
 # Test 4: Crypto-style series - target_7d equals exact shift of 7 rows
 # ---------------------------------------------------------------------------
 def test_crypto_target_7d_equals_7_rows_ahead():
-    """For continuous 24/7 crypto series, calendar t+7 corresponds exactly
-    to the candle 7 rows ahead: target_7d = close_{t+7} / close_t - 1.
-    """
     num_days = 15
     dates = pd.date_range("2023-01-01", periods=num_days, freq="D")
     # Linear prices: 100, 101, 102, ..., 114
@@ -186,11 +171,6 @@ def test_crypto_target_7d_equals_7_rows_ahead():
 # Test 5: Equity-style series with weekend gaps - as-of uses right earlier close
 # ---------------------------------------------------------------------------
 def test_equity_forward_return_asof_weekend_gaps():
-    """Verify as-of backward lookup handles weekends and non-trading days.
-
-    When t+N lands on a weekend (Saturday or Sunday), the as-of lookup must
-    match the last trading day on or before t+N (Friday's close).
-    """
     # Business days over 2 weeks (Monday 2023-01-02 to Friday 2023-01-13)
     b_dates = pd.bdate_range("2023-01-02", "2023-01-13")
     # Closes for each business day:
@@ -237,11 +217,6 @@ def test_equity_forward_return_asof_weekend_gaps():
 # Test 6: Last N days are NaN and tolerance stops stale match
 # ---------------------------------------------------------------------------
 def test_forward_return_end_nan_and_tolerance_cutoff():
-    """Verify:
-    1. Rows whose target date t+N falls beyond max_date are NaN.
-    2. Tolerance stops matching stale prices when gap between t+N and
-       the prior close exceeds tolerance_days.
-    """
     # Part 1: Last N calendar days must have target = NaN
     df_recent = pd.DataFrame(
         {
@@ -286,11 +261,6 @@ def test_forward_return_end_nan_and_tolerance_cutoff():
 # Test 7: Target at t depends only on closes at t and t+N (no path leakage)
 # ---------------------------------------------------------------------------
 def test_target_depends_only_on_endpoints_no_path_leakage():
-    """Verify changing intermediate prices between t and t+N does not affect target_{N}d.
-
-    The forward return is close(t+N) / close(t) - 1 and must be completely
-    independent of any interim volatility, spikes, or drops between t and t+N.
-    """
     dates = pd.date_range("2023-01-01", periods=15, freq="D")
 
     # Baseline series: steady prices
@@ -321,9 +291,6 @@ def test_target_depends_only_on_endpoints_no_path_leakage():
 # Test 8: Running process_asset twice gives identical output (idempotence)
 # ---------------------------------------------------------------------------
 def test_process_asset_idempotence(tmp_path, monkeypatch):
-    """Verify calling process_asset twice on the same raw file produces
-    strictly identical results and writes identically.
-    """
     raw_dir = tmp_path / "raw"
     processed_dir = tmp_path / "processed"
     raw_dir.mkdir(parents=True, exist_ok=True)

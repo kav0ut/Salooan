@@ -26,6 +26,9 @@ TARGET_ASOF_TOLERANCE_DAYS = 5
 # Window sizes for technical indicators
 VOLATILITY_WINDOW = 30
 VOLUME_WINDOW = 30
+VOLATILITY_COL = f"volatility_{VOLATILITY_WINDOW}d"
+VOLUME_COL = f"avg_dollar_volume_{VOLUME_WINDOW}d"
+FEATURE_COLUMNS = [VOLATILITY_COL, VOLUME_COL]
 
 # Random seed for reproducibility
 RANDOM_SEED = 42

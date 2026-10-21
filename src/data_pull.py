@@ -16,9 +16,6 @@ from src.config import BINANCE_URL, COLUMNS, RAW_DIR, CRYPTO_ASSETS, EQUITY_ASSE
 
 
 def to_ms(date_str: str) -> int:
-    """Convert a date string in YYYY-MM-DD format to milliseconds since epoch (UTC start of day).
-    If the input is already an integer, assume it's milliseconds and return it.
-    """
     if isinstance(date_str, (int, float)):
         return int(date_str)
     dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -26,11 +23,6 @@ def to_ms(date_str: str) -> int:
 
 
 def fetch_binance(symbol: str, start_date: str, end_date: Optional[str] = None) -> pd.DataFrame:
-    """Fetch daily klines from Binance for a symbol and date range.
-    Handles pagination (1000 limit per request), stops on a short page,
-    sleeps 0.2 seconds between requests, and drops today's unfinished candle.
-    Returns a DataFrame with the raw schema and correct dtypes.
-    """
     start_ms = to_ms(start_date)
     end_ms = to_ms(end_date) if end_date else None
 
@@ -88,10 +80,6 @@ def fetch_binance(symbol: str, start_date: str, end_date: Optional[str] = None) 
 
 
 def fetch_equity(symbol: str, start_date: str, end_date: Optional[str] = None) -> pd.DataFrame:
-    """Fetch daily equity data from Yahoo Finance for a symbol and date range.
-    Uses auto_adjust=True, drops today's row, and maps to the raw schema.
-    NaN is used for n_trades and taker_buy_base/quote_asset_volume.
-    """
     # yfinance expects dates as strings; if end_date is None, it defaults to today (but we will drop today later)
     df = yf.download(symbol, start=start_date, end=end_date, progress=False, auto_adjust=True)
     if df.empty:
@@ -137,7 +125,6 @@ def fetch_equity(symbol: str, start_date: str, end_date: Optional[str] = None) -
 
 
 def save_raw_df(df: pd.DataFrame, symbol: str) -> None:
-    """Save a DataFrame to RAW_DIR as a Parquet file using an atomic write."""
     os.makedirs(RAW_DIR, exist_ok=True)
     temp_path = os.path.join(RAW_DIR, f"{symbol}.parquet.tmp")
     final_path = os.path.join(RAW_DIR, f"{symbol}.parquet")
@@ -146,11 +133,6 @@ def save_raw_df(df: pd.DataFrame, symbol: str) -> None:
 
 
 def update_asset(symbol: str) -> None:
-    """Incrementally update raw data for a symbol.
-    Reads existing Parquet (if any), fetches new data from the day after the last saved date,
-    merges, drops duplicates, sorts, and saves atomically.
-    Prints the number of rows added.
-    """
     symbol_upper = symbol.upper()
     parquet_path = os.path.join(RAW_DIR, f"{symbol_upper}.parquet")
 
@@ -207,7 +189,6 @@ def update_asset(symbol: str) -> None:
 
 
 def main() -> None:
-    """Main entry point: update all assets defined in config."""
     for symbol in CRYPTO_ASSETS + EQUITY_ASSETS:
         update_asset(symbol)
 

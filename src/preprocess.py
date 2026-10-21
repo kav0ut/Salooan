@@ -24,14 +24,6 @@ from src.config import (
 
 
 def load_raw(asset: str) -> pd.DataFrame:
-    """Read data/raw/<asset>.parquet.
-
-    Args:
-        asset: The symbol name (e.g. 'BTCUSDT' or 'SPY').
-
-    Returns:
-        pd.DataFrame containing the raw ingested data.
-    """
     file_path = os.path.join(RAW_DIR, f"{asset}.parquet")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Raw data file not found: {file_path}")
@@ -39,16 +31,6 @@ def load_raw(asset: str) -> pd.DataFrame:
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean raw price DataFrame.
-
-    - Ensures date column exists (converted from open_time if needed, normalized to midnight).
-    - Sorts chronologically by date.
-    - Drops duplicate dates (retaining the first occurrence).
-    - Drops rows with NaN or non-positive close prices.
-    - Enforces float64 dtypes on numeric price/volume columns.
-    - Never forward-fills prices.
-    - Returns a new DataFrame without mutating the input.
-    """
     df = df.copy()
 
     # Convert open_time (ms) to normalized tz-naive datetime if date column is missing
@@ -90,18 +72,6 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 def find_gaps(
     df: pd.DataFrame, asset_class: Optional[str] = None
 ) -> List[Tuple[pd.Timestamp, pd.Timestamp, int]]:
-    """Report missing calendar days between consecutive rows.
-
-    For equities, weekend and holiday gaps are expected and normal.
-    For crypto, markets trade 24/7/365, so any missing calendar day triggers a warning.
-
-    Args:
-        df: DataFrame containing at least a 'date' column.
-        asset_class: 'crypto' or 'equity'. If None, attempts to infer from df columns.
-
-    Returns:
-        List of tuples: (previous_date, current_date, missing_days_count).
-    """
     if asset_class is not None:
         is_crypto = str(asset_class).lower() == "crypto"
     elif "asset_class" in df.columns and len(df) > 0:
@@ -136,11 +106,6 @@ def find_gaps(
 
 
 def add_log_return(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute daily log return: ln(close_t / close_{t-1}).
-
-    The first row will be NaN because there is no prior day close.
-    Returns a new DataFrame and does not mutate the input.
-    """
     df = df.copy()
     if df.empty:
         df["log_return"] = pd.Series(dtype="float64")
@@ -156,19 +121,6 @@ def add_forward_return(
     horizon_days: int,
     tolerance_days: int = TARGET_ASOF_TOLERANCE_DAYS,
 ) -> pd.DataFrame:
-    """Add target_{N}d column representing simple forward return over N calendar days.
-
-    target_{N}d = close(t+N) / close(t) - 1.
-
-    Because equity markets close on weekends/holidays, date t+N might not have a close.
-    We use pd.merge_asof(..., direction='backward', tolerance=tolerance_days) to match
-    the latest available close on or before date t+N.
-    - If t+N extends beyond the latest date available in the dataset, target is NaN.
-    - If the gap between t+N and the latest prior close exceeds tolerance_days, target is NaN.
-    - Rows with NaN target are kept (required for live inference on the latest N days).
-
-    Returns a new DataFrame and does not mutate the input.
-    """
     df = df.copy()
     target_col = f"target_{horizon_days}d"
 
@@ -223,7 +175,6 @@ def add_forward_return(
 
 
 def save_processed(df: pd.DataFrame, asset: str) -> None:
-    """Save processed DataFrame to data/processed/<asset>.parquet using an atomic write."""
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     temp_path = os.path.join(PROCESSED_DIR, f"{asset}.parquet.tmp")
     final_path = os.path.join(PROCESSED_DIR, f"{asset}.parquet")
@@ -232,19 +183,6 @@ def save_processed(df: pd.DataFrame, asset: str) -> None:
 
 
 def process_asset(asset: str) -> pd.DataFrame:
-    """Process a single asset from raw parquet to processed parquet.
-
-    1. Load raw data.
-    2. Attach asset metadata.
-    3. Clean and normalize dates and dtypes.
-    4. Detect calendar gaps.
-    5. Calculate log returns.
-    6. Calculate simple forward returns for each horizon in HORIZONS_DAYS.
-    7. Atomically save to data/processed/<asset>.parquet.
-
-    Returns:
-        The processed pd.DataFrame.
-    """
     df = load_raw(asset)
 
     # Attach asset metadata
@@ -273,7 +211,6 @@ def process_asset(asset: str) -> pd.DataFrame:
 
 
 def main() -> None:
-    """Process all assets in CRYPTO_ASSETS and EQUITY_ASSETS and print summary metrics."""
     all_assets = CRYPTO_ASSETS + EQUITY_ASSETS
     print(f"Starting preprocessing for {len(all_assets)} assets...\n")
 
