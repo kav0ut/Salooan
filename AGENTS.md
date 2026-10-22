@@ -59,16 +59,17 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`features.py`** - rolling volatility (std of log returns) and rolling average dollar volume per asset; merges all assets into one feature table. Stretch: max drawdown, correlation with BTC
 - **`split.py`** - prepares horizon modeling table (drops rows with NaN target), chronological train/test split by unique dates with an N-day purge gap. Never shuffle
 - **`baselines.py`** - static (pooled training targets alpha-quantile) and historical (per-asset training targets alpha-quantile) baselines fit on training set only, predicting quantile returns aligned with test set
-- **`metrics.py`** - hand-implemented pinball loss and coverage (breach rate) in numpy
+- **`metrics.py`** - hand-implemented pinball loss and coverage (breach rate) in numpy with strict input validation
 - **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for a (horizon, confidence) pair using `FEATURE_COLUMNS`; saves bundle with joblib to `models/`
 - **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
-- **`evaluate.py`** - scores models and baselines on the test set, per asset and overall, writes `results/results.json`
+- **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, scores model and baselines on test split (overall and per asset: n_rows, pinball loss, breach rate, mean haircut), computes comparison block, writes `results/results.json` atomically
 - **`app.py`** (project root) - Streamlit dashboard
 
 ### Data schemas
 - **Raw** (one row per asset per day): `date, open, high, low, close, volume, n_trades, taker_buy_volume, asset, asset_class`. Equities have NaN for `n_trades` and `taker_buy_volume`
 - **Processed** adds: `log_return` and one `target_{N}d` column per horizon in `HORIZONS_DAYS` (simple forward return). Rows with no target (the latest N calendar days) are kept with NaN, because the app needs them for prediction
 - **Feature table**: `asset, asset_class, date, volatility_30d, avg_dollar_volume_30d, target_{N}d`. Rows with incomplete rolling windows are dropped, never filled. Rows with no target are dropped only when building training sets; the latest row per asset is kept for prediction
+- **results.json**: `{"generated_at": <UTC ISO string>, "configs": {"h{N}_c{pct}": {"horizon_days", "confidence", "alpha", "test_start", "train_end_date", "n_train_rows", "n_test_rows", "methods": {"model"|"static"|"historical": {"overall": {...}, "per_asset": {asset: {...}}}}, "comparison": {...}}}}` with plain Python types only
 
 ### Key design decisions
 - **Granularity**: daily candles, about 3 years of history, completed candles only. Not real-time
@@ -105,6 +106,13 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Haircut conversion**: `haircut = clip(-q, 0, 1)` where `q` is the predicted quantile return. `max_loan = collateral_value * (1 - haircut)`
 - **Prediction uses the latest feature row per asset**, including rows whose target is NaN. For equities the latest row is the last trading day, so always show the as-of date next to the prediction
 - **Quantile crossing** is not an issue with a single model. Multi-quantile training is a stretch item in M10
+- **Metrics are hand-implemented in numpy** in `src/metrics.py`; sklearn is allowed only inside tests as an independent reference (`pinball_loss(y_true, y_pred, alpha)` and `breach_rate(y_true, y_pred)`)
+- **Evaluation scoring**: scores model and both baselines (static, historical) on the TEST split only, for one `(horizon, confidence)` pair, overall and per asset: `n_rows`, `pinball_loss`, `breach_rate`, `mean_haircut` (mean of `to_haircut(q)`)
+- **Comparison block**: pinball improvement of the model vs each baseline in percent (`(baseline - model) / baseline * 100`, positive means the model is better), and average absolute distance of per-asset breach rates from alpha
+- **Pure core, IO at the edges**: `evaluate_config(bundle, features)` takes bundle and feature table and returns a dict with no disk access; `main()` loads bundle, calls it, prints table and writes `results/results.json` atomically
+- **Stale-model guard**: `evaluate_config` rebuilds the split with `split_by_date` and raises `ValueError` if `bundle["train_end_date"]` differs from the maximum training date of that split
+- **Config-keyed results**: `results.json` is keyed by config (e.g. `h7_c95`) so M8 can add the grid without changing schema; written atomically (temp file then `os.replace`)
+- **Overlapping return caveat**: overlapping N-day returns make breaches cluster, so breach rates are noisy and small differences from alpha are not evidence of a problem; with a 20% test fraction, 99% confidence has very few expected breaches
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -136,7 +144,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-4 complete and committed. Milestone 5 is ready to commit (`feat: add quantile training and haircut prediction`). Milestone 6 (pinball loss, coverage, evaluation vs baselines) is next; its spec will be in `MILESTONES/MILESTONE_6.md`.
+Milestones 0-5 complete and committed (M5 tagged `v0.1-minimal-demo`). Milestone 6 is ready to commit (`feat: add evaluation against baselines`). Milestone 7 (Streamlit app) is next; its spec will be in `MILESTONES/MILESTONE_7.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 

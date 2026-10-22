@@ -9,6 +9,7 @@ PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 FEATURES_PATH = os.path.join(PROCESSED_DIR, "features.parquet")
+RESULTS_PATH = os.path.join(RESULTS_DIR, "results.json")
 
 # Asset definitions
 CRYPTO_ASSETS = ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOGEUSDT"]
