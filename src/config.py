@@ -18,6 +18,9 @@ EQUITY_ASSETS = ["SPY", "ARKK"]
 START_DATE = "2023-01-01"
 HORIZONS_DAYS = [7, 14]
 CONFIDENCE_LEVELS = [0.90, 0.95, 0.99]
+DEFAULT_HORIZON_DAYS = 7
+DEFAULT_CONFIDENCE = 0.95
+DEMO_COLLATERAL_VALUE = 10000
 TEST_FRACTION = 0.2
 # Tolerance for as-of lookup when matching forward returns (in days)
 TARGET_ASOF_TOLERANCE_DAYS = 5
@@ -28,6 +31,16 @@ VOLUME_WINDOW = 30
 VOLATILITY_COL = f"volatility_{VOLATILITY_WINDOW}d"
 VOLUME_COL = f"avg_dollar_volume_{VOLUME_WINDOW}d"
 FEATURE_COLUMNS = [VOLATILITY_COL, VOLUME_COL]
+
+# Model hyperparameters
+MODEL_PARAMS = {
+    "n_estimators": 300,
+    "max_depth": 3,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "min_child_weight": 5,
+    "tree_method": "hist",
+}
 
 # Random seed for reproducibility
 RANDOM_SEED = 42

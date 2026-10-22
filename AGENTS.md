@@ -60,8 +60,8 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`split.py`** - prepares horizon modeling table (drops rows with NaN target), chronological train/test split by unique dates with an N-day purge gap. Never shuffle
 - **`baselines.py`** - static (pooled training targets alpha-quantile) and historical (per-asset training targets alpha-quantile) baselines fit on training set only, predicting quantile returns aligned with test set
 - **`metrics.py`** - hand-implemented pinball loss and coverage (breach rate) in numpy
-- **`train.py`** - gradient boosting (XGBoost or LightGBM) with quantile objective; saves models with joblib to `models/`
-- **`predict.py`** - latest-day features -> predicted quantile return -> haircut -> max loan
+- **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for a (horizon, confidence) pair using `FEATURE_COLUMNS`; saves bundle with joblib to `models/`
+- **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
 - **`evaluate.py`** - scores models and baselines on the test set, per asset and overall, writes `results/results.json`
 - **`app.py`** (project root) - Streamlit dashboard
 
@@ -96,6 +96,15 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Baselines fit on train only**: `static` is the alpha-quantile of pooled training targets (alpha = 1 - confidence); `historical` is the alpha-quantile of each asset's own training targets
 - **Baseline output**: predicted quantile return (negative number means loss), aligned with test rows. Haircut conversion (`-q`, floored at 0) happens in M5
 - **High-confidence coverage limitation**: with a 20% test period and overlapping N-day returns, high confidence levels (99%) have very few expected breaches, making coverage at 99% noisy
+- **Model**: `xgboost.XGBRegressor` with `objective="reg:quantileerror"` and `quantile_alpha = 1 - confidence` (pinball loss). This objective needs xgboost >= 2.0
+- **Model features**: only `FEATURE_COLUMNS`. No asset id and no `asset_class` in v1, so the model must infer risk from volatility and liquidity alone, which is the point of a dynamic haircut
+- **Parameterized, trained once for now**: `train_model` and the helpers take `horizon_days` and `confidence`; in M5 only the default pair (`DEFAULT_HORIZON_DAYS = 7`, `DEFAULT_CONFIDENCE = 0.95`) is trained. The full grid comes in M8
+- **Trained on the TRAIN split only** (the purged split from M4), so the M6 evaluation on the test set is clean. Retraining on all data for deployment is a later stretch item
+- **Fixed hyperparameters** from `MODEL_PARAMS` in config. No tuning and no early stopping in v1. Seed from `RANDOM_SEED`, so training is deterministic
+- **Saved bundle** (joblib, one file per `(horizon, confidence)`): a dict with `model`, `horizon_days`, `confidence`, `feature_columns`, `train_end_date`, `n_train_rows`. Path: `models/quantile_h{N}_c{pct}.joblib` where `pct = round(confidence * 100)`. `predict` refuses to run if the bundle's `feature_columns` differ from the current `FEATURE_COLUMNS` (stale model guard)
+- **Haircut conversion**: `haircut = clip(-q, 0, 1)` where `q` is the predicted quantile return. `max_loan = collateral_value * (1 - haircut)`
+- **Prediction uses the latest feature row per asset**, including rows whose target is NaN. For equities the latest row is the last trading day, so always show the as-of date next to the prediction
+- **Quantile crossing** is not an issue with a single model. Multi-quantile training is a stretch item in M10
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -127,7 +136,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-3 complete and committed. Milestone 4 is ready to commit (`feat: add time-based split and baselines`). Milestone 5 (quantile boosting training and haircut prediction) is next; its spec will be in `MILESTONES/MILESTONE_5.md`.
+Milestones 0-4 complete and committed. Milestone 5 is ready to commit (`feat: add quantile training and haircut prediction`). Milestone 6 (pinball loss, coverage, evaluation vs baselines) is next; its spec will be in `MILESTONES/MILESTONE_6.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 
