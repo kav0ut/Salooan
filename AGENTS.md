@@ -63,7 +63,8 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for a (horizon, confidence) pair using `FEATURE_COLUMNS`; saves bundle with joblib to `models/`
 - **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
 - **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, scores model and baselines on test split (overall and per asset: n_rows, pinball loss, breach rate, mean haircut), computes comparison block, writes `results/results.json` atomically
-- **`app.py`** (project root) - Streamlit dashboard
+- **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `test_period_start`, `evaluation_tables`), no Streamlit dependency
+- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, two tabs: haircut calculator and evaluation)
 
 ### Data schemas
 - **Raw** (one row per asset per day): `date, open, high, low, close, volume, n_trades, taker_buy_volume, asset, asset_class`. Equities have NaN for `n_trades` and `taker_buy_volume`
@@ -113,6 +114,19 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Stale-model guard**: `evaluate_config` rebuilds the split with `split_by_date` and raises `ValueError` if `bundle["train_end_date"]` differs from the maximum training date of that split
 - **Config-keyed results**: `results.json` is keyed by config (e.g. `h7_c95`) so M8 can add the grid without changing schema; written atomically (temp file then `os.replace`)
 - **Overlapping return caveat**: overlapping N-day returns make breaches cluster, so breach rates are noisy and small differences from alpha are not evidence of a problem; with a 20% test fraction, 99% confidence has very few expected breaches
+- **Thin UI, testable logic**: `app.py` only lays out widgets and calls functions in `src/dashboard.py`. All data preparation lives in `dashboard.py` as pure functions (no Streamlit imports), so it can be unit-tested
+- **App is read-only**: loads saved model, feature table, processed price files and `results.json`. Never trains, never calls an API, never writes files. Refresh button comes in M9
+- **Fixed configuration in M7**: only the default pair (`DEFAULT_HORIZON_DAYS`, `DEFAULT_CONFIDENCE`). Sidebar shows it as read-only text; grid sliders come in M8
+- **Page layout**: `st.set_page_config(page_title="Salooan", layout="wide")` as the first Streamlit call, title "Salooan", one-line plain-language explanation of what a haircut is
+- **Sidebar**: asset selector (six assets from config) and collateral value input (`DEMO_COLLATERAL_VALUE` default, minimum 0, step 100)
+- **Two tabs**: "Haircut calculator" and "Evaluation"
+- **Calculator tab**: three headline metrics (haircut %, max loan, predicted worst-case 7-day drop %); as-of date (last trading day for equities); current volatility and dollar-volume features; model vs baselines comparison bar chart; risk chart
+- **Risk chart**: closing price over last 365 days plus predicted floor line (`close(t) * (1 + q(t))` plotted at `t + N` calendar days). Last N days of floor extend beyond last price date (live prediction). Vertical line marks `test_start` (start of out-of-sample period) with explanatory caption
+- **Evaluation tab**: reads `results.json` for default config. Summary table (pinball loss, breach rate, mean haircut per method), grouped bar chart of per-asset breach rates with horizontal line at alpha, comparison block metrics, run facts (`test_start`, `train_end_date`, train and test row counts, `generated_at`), and overlapping return noise caption
+- **Friendly failures**: if model file, feature table, or `results.json` is missing, show `st.error` or `st.warning` with the command to create it (`python -m src.train`, `python -m src.features`, `python -m src.evaluate`) and call `st.stop()`. Never show raw traceback
+- **Caching**: `@st.cache_resource` for model bundle and `@st.cache_data` for DataFrames and computed tables
+- **Footer**: educational project disclaimer, not financial advice
+- **Plots**: Plotly
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -144,7 +158,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-5 complete and committed (M5 tagged `v0.1-minimal-demo`). Milestone 6 is ready to commit (`feat: add evaluation against baselines`). Milestone 7 (Streamlit app) is next; its spec will be in `MILESTONES/MILESTONE_7.md`.
+Milestones 0-6 complete and committed. Milestone 7 is ready to commit (`feat: add Streamlit app`). Milestone 8 (Model grid wired to sidebar) is next; its spec will be in `MILESTONES/MILESTONE_8.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 
