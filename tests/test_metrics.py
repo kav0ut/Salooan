@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from sklearn.metrics import mean_pinball_loss
 
-from src.metrics import breach_rate, pinball_loss
+from src.metrics import breach_rate, crossing_rate, pinball_loss
 
 
 def test_pinball_loss_hand_computed_symmetric() -> None:
@@ -145,3 +145,71 @@ def test_inputs_are_not_mutated() -> None:
 
     pd.testing.assert_series_equal(y_series, y_ser_copy)
     pd.testing.assert_series_equal(q_series, q_ser_copy)
+
+
+def test_crossing_rate_monotone_gives_zero() -> None:
+    # Monotone non-increasing returns as confidence increases yields 0 crossing
+    preds = {
+        0.90: np.array([-0.05, -0.04, -0.06]),
+        0.95: np.array([-0.10, -0.08, -0.12]),
+        0.99: np.array([-0.20, -0.18, -0.25]),
+    }
+    assert crossing_rate(preds) == pytest.approx(0.0)
+
+
+def test_crossing_rate_one_violating_row_out_of_n() -> None:
+    # 4 rows: row 1 violates (-0.05 < -0.02), other 3 rows are monotone
+    preds = {
+        0.90: [-0.05, -0.05, -0.05, -0.05],
+        0.95: [-0.10, -0.02, -0.10, -0.10],
+    }
+    assert crossing_rate(preds) == pytest.approx(1.0 / 4.0)
+
+
+def test_crossing_rate_ties_are_not_violations() -> None:
+    # Exact ties across confidence levels are not violations
+    preds = {
+        0.90: [-0.10, -0.05, -0.02],
+        0.95: [-0.10, -0.05, -0.02],
+        0.99: [-0.10, -0.05, -0.02],
+    }
+    assert crossing_rate(preds) == pytest.approx(0.0)
+
+
+def test_crossing_rate_three_confidences_only_last_pair_crosses_counted_once() -> None:
+    # Row 0: 0.90 -> -0.05, 0.95 -> -0.10 (ok), 0.99 -> -0.08 (crosses 0.95)
+    # Row 1: all ok (-0.05 >= -0.10 >= -0.20)
+    preds = {
+        0.90: [-0.05, -0.05],
+        0.95: [-0.10, -0.10],
+        0.99: [-0.08, -0.20],
+    }
+    # 1 of 2 rows violates, counted once per row -> 0.5
+    assert crossing_rate(preds) == pytest.approx(0.5)
+
+
+def test_crossing_rate_validation_errors() -> None:
+    # Single confidence level
+    with pytest.raises(ValueError, match="at least two"):
+        crossing_rate({0.95: [-0.10, -0.05]})
+
+    # Unequal lengths
+    with pytest.raises(ValueError, match="Length mismatch"):
+        crossing_rate({0.90: [-0.05, -0.05], 0.95: [-0.10]})
+
+    # NaN in predictions
+    with pytest.raises(ValueError, match="NaN"):
+        crossing_rate({0.90: [-0.05, np.nan], 0.95: [-0.10, -0.10]})
+
+
+def test_crossing_rate_inputs_not_mutated() -> None:
+    arr1 = np.array([-0.05, -0.04])
+    arr2 = np.array([-0.10, -0.08])
+    copy1 = arr1.copy()
+    copy2 = arr2.copy()
+
+    _ = crossing_rate({0.90: arr1, 0.95: arr2})
+
+    np.testing.assert_array_equal(arr1, copy1)
+    np.testing.assert_array_equal(arr2, copy2)
+

@@ -1,4 +1,4 @@
-from typing import Sequence, Tuple, Union
+from typing import Mapping, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
@@ -64,3 +64,46 @@ def breach_rate(
     y_arr, q_arr = _validate_inputs(y_true, y_pred)
     # Strict inequality: realized return is worse than predicted quantile
     return float(np.mean(y_arr < q_arr))
+
+
+def crossing_rate(
+    predictions_by_confidence: Mapping[Union[float, str], Union[np.ndarray, pd.Series, Sequence[float]]],
+) -> float:
+    if len(predictions_by_confidence) < 2:
+        raise ValueError("crossing_rate requires at least two confidence levels.")
+
+    sorted_confs = sorted(predictions_by_confidence.keys(), key=float)
+    arrays = []
+    expected_len = None
+
+    for conf in sorted_confs:
+        val = predictions_by_confidence[conf]
+        if isinstance(val, pd.Series):
+            arr = val.to_numpy(dtype=np.float64, copy=True)
+        else:
+            arr = np.asarray(val, dtype=np.float64)
+
+        if arr.ndim != 1:
+            arr = arr.ravel()
+
+        if len(arr) == 0:
+            raise ValueError("Prediction arrays cannot be empty.")
+
+        if expected_len is None:
+            expected_len = len(arr)
+        elif len(arr) != expected_len:
+            raise ValueError(f"Length mismatch: expected {expected_len}, got {len(arr)}.")
+
+        if np.isnan(arr).any():
+            raise ValueError("Prediction arrays cannot contain NaN values.")
+
+        if np.isinf(arr).any():
+            raise ValueError("Prediction arrays cannot contain infinite values.")
+
+        arrays.append(arr)
+
+    matrix = np.column_stack(arrays)
+    # Predicted returns must be non-increasing with confidence; diff > 0 indicates crossing
+    diffs = np.diff(matrix, axis=1)
+    violating_rows = np.any(diffs > 0, axis=1)
+    return float(np.mean(violating_rows))

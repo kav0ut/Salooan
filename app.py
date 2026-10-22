@@ -7,12 +7,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.config import (
+    CONFIDENCE_LEVELS,
     CRYPTO_ASSETS,
     DEFAULT_CONFIDENCE,
     DEFAULT_HORIZON_DAYS,
     DEMO_COLLATERAL_VALUE,
     EQUITY_ASSETS,
     FEATURES_PATH,
+    HORIZONS_DAYS,
     MODELS_DIR,
     PROCESSED_DIR,
     RESULTS_PATH,
@@ -21,11 +23,13 @@ from src.dashboard import (
     baseline_haircuts,
     calculator_result,
     evaluation_tables,
+    latest_crossing,
     load_results,
     risk_band,
     test_period_start,
 )
-from src.train import load_bundle
+import src.train as train
+from src.train import config_key, model_path
 
 st.set_page_config(page_title="Salooan", layout="wide")
 
@@ -35,22 +39,19 @@ st.markdown(
     "liquidation horizon so lenders can safely size cash loans against volatile collateral."
 )
 
-model_file = os.path.join(
-    MODELS_DIR,
-    f"quantile_h{DEFAULT_HORIZON_DAYS}_c{round(DEFAULT_CONFIDENCE * 100)}.joblib",
-)
-if not os.path.exists(model_file):
-    st.error(f"Model file not found at {model_file}. Please train the model with: python -m src.train")
-    st.stop()
-
 if not os.path.exists(FEATURES_PATH):
     st.error(f"Feature table not found at {FEATURES_PATH}. Please generate features with: python -m src.features")
     st.stop()
 
 
 @st.cache_resource
-def get_bundle() -> Dict[str, Any]:
-    return load_bundle(DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE)
+def get_bundle(horizon_days: int, confidence: float) -> Dict[str, Any]:
+    return train.load_bundle(horizon_days, confidence)
+
+
+@st.cache_resource
+def get_horizon_bundles(horizon_days: int) -> Dict[float, Dict[str, Any]]:
+    return train.load_grid_bundles(horizon_days, CONFIDENCE_LEVELS)
 
 
 @st.cache_data
@@ -71,9 +72,6 @@ def get_results() -> Optional[Dict[str, Any]]:
     return load_results(RESULTS_PATH)
 
 
-bundle = get_bundle()
-features = get_features()
-
 all_assets = CRYPTO_ASSETS + EQUITY_ASSETS
 
 st.sidebar.header("Collateral & Loan")
@@ -87,20 +85,66 @@ collateral = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Model Configuration")
-st.sidebar.text(f"Liquidation Horizon: {DEFAULT_HORIZON_DAYS} days")
-st.sidebar.text(f"Confidence Level: {int(DEFAULT_CONFIDENCE * 100)}%")
-st.sidebar.caption("Fixed configuration for Milestone 7 (grid selection in Milestone 8).")
+
+default_h_idx = HORIZONS_DAYS.index(DEFAULT_HORIZON_DAYS) if DEFAULT_HORIZON_DAYS in HORIZONS_DAYS else 0
+selected_horizon = st.sidebar.radio(
+    "Liquidation Horizon",
+    options=HORIZONS_DAYS,
+    index=default_h_idx,
+    format_func=lambda h: f"{h} days",
+)
+
+selected_confidence = st.sidebar.select_slider(
+    "Confidence Level",
+    options=CONFIDENCE_LEVELS,
+    value=DEFAULT_CONFIDENCE,
+    format_func=lambda c: f"{round(c * 100)}%",
+)
+
+# Friendly failure check for selected model bundle
+selected_model_file = model_path(selected_horizon, selected_confidence)
+if not os.path.exists(selected_model_file):
+    st.error(
+        f"Model file for horizon={selected_horizon}d and confidence={round(selected_confidence * 100)}% "
+        f"not found at {selected_model_file}. Please train models with: python -m src.train"
+    )
+    st.stop()
+
+try:
+    bundle = get_bundle(selected_horizon, selected_confidence)
+except FileNotFoundError as err:
+    st.error(
+        f"Model file not found: {err}. Please train models with: python -m src.train"
+    )
+    st.stop()
+
+features = get_features()
 
 tab_calc, tab_eval = st.tabs(["Haircut calculator", "Evaluation"])
 
 with tab_calc:
+    # Diagnostic warning if quantile crossing is detected for this asset across confidences
+    try:
+        horizon_bundles = get_horizon_bundles(selected_horizon)
+        crossing_dict = latest_crossing(horizon_bundles, features, selected_asset)
+        if crossing_dict is not None:
+            details = ", ".join([f"{round(c * 100)}%: {val:.2%}" for c, val in crossing_dict.items()])
+            st.warning(
+                f"Quantile crossing detected for {selected_asset} at {selected_horizon}-day horizon: "
+                f"predicted returns across confidence levels violate monotonic ordering ({details}). "
+                "Higher confidence models should predict larger or equal projected drops."
+            )
+    except Exception:
+        pass
+
     calc = calculator_result(bundle, features, selected_asset, collateral)
 
+    conf_pct = round(selected_confidence * 100)
     col1, col2, col3 = st.columns(3)
     col1.metric("Recommended Haircut", f"{calc['haircut']:.2%}")
     col2.metric("Maximum Loan Amount", f"${calc['max_loan']:,.2f}")
     col3.metric(
-        f"Worst-Case {DEFAULT_HORIZON_DAYS}d Return",
+        f"Predicted worst-case {selected_horizon}-day drop ({conf_pct}% confidence)",
         f"{calc['predicted_return']:.2%}",
     )
 
@@ -118,8 +162,8 @@ with tab_calc:
     st.markdown("### Haircut Comparison vs Baselines")
     base_hc = baseline_haircuts(
         features,
-        DEFAULT_HORIZON_DAYS,
-        DEFAULT_CONFIDENCE,
+        selected_horizon,
+        selected_confidence,
         selected_asset,
     )
     hc_df = pd.DataFrame({
@@ -153,10 +197,10 @@ with tab_calc:
         features,
         prices,
         selected_asset,
-        DEFAULT_HORIZON_DAYS,
+        selected_horizon,
         lookback_days=365,
     )
-    t_start = test_period_start(features, DEFAULT_HORIZON_DAYS)
+    t_start = test_period_start(features, selected_horizon)
 
     fig_risk = go.Figure()
     fig_risk.add_trace(go.Scatter(
@@ -170,7 +214,7 @@ with tab_calc:
         x=band["floor_date"],
         y=band["floor_price"],
         mode="lines",
-        name=f"Predicted Floor (t+{DEFAULT_HORIZON_DAYS}d)",
+        name=f"Predicted Floor (t+{selected_horizon}d)",
         line=dict(color="#dc2626", width=1.5, dash="dash"),
     ))
 
@@ -192,10 +236,10 @@ with tab_calc:
     st.plotly_chart(fig_risk, width="stretch")
 
     st.caption(
-        "The dashed red line is the model's predicted floor price for date t + 7. "
+        f"The dashed red line is the model's predicted floor price for date t + {selected_horizon}. "
         "Breaches occur when the closing price dips below this floor. "
         "Predictions before the vertical dotted line were made on training data (in-sample); "
-        "predictions after it are strictly out-of-sample. The final 7 days of the floor extend "
+        f"predictions after it are strictly out-of-sample. The final {selected_horizon} days of the floor extend "
         "beyond the last price date into the future (live prediction)."
     )
 
@@ -208,16 +252,15 @@ with tab_eval:
         )
         st.stop()
 
-    pct = round(DEFAULT_CONFIDENCE * 100)
-    config_key = f"h{DEFAULT_HORIZON_DAYS}_c{pct}"
-    if config_key not in results.get("configs", {}):
+    curr_config_key = config_key(selected_horizon, selected_confidence)
+    if curr_config_key not in results.get("configs", {}):
         st.warning(
-            f"Configuration '{config_key}' not found in {RESULTS_PATH}. "
+            f"Configuration '{curr_config_key}' not found in {RESULTS_PATH}. "
             "Please run evaluation with: python -m src.evaluate"
         )
         st.stop()
 
-    summary_df, per_asset_df, comparison_dict, info_dict = evaluation_tables(results, config_key)
+    summary_df, per_asset_df, comparison_dict, info_dict = evaluation_tables(results, curr_config_key)
 
     st.markdown("### Run Metadata & Split Information")
     r1, r2, r3, r4 = st.columns(4)

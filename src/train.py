@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Any, Dict
+from typing import Any, Dict, List, Sequence
 
 import joblib
 import numpy as np
@@ -8,22 +8,34 @@ import pandas as pd
 import xgboost as xgb
 
 from src.config import (
+    CONFIDENCE_LEVELS,
     DEFAULT_CONFIDENCE,
     DEFAULT_HORIZON_DAYS,
     FEATURE_COLUMNS,
     FEATURES_PATH,
+    HORIZONS_DAYS,
     MODEL_PARAMS,
     MODELS_DIR,
+    PROJECT_ROOT,
     RANDOM_SEED,
     TEST_FRACTION,
 )
 from src.split import prepare_horizon_table, split_by_date
 
 
-def model_path(horizon_days: int, confidence: float) -> str:
+def config_key(horizon_days: int, confidence: float) -> str:
     pct = round(confidence * 100)
-    filename = f"quantile_h{horizon_days}_c{pct}.joblib"
-    return os.path.join(MODELS_DIR, filename)
+    return f"h{horizon_days}_c{pct}"
+
+
+def model_path(
+    horizon_days: int,
+    confidence: float,
+    models_dir: str | None = None,
+) -> str:
+    target_dir = models_dir if models_dir is not None else MODELS_DIR
+    filename = f"quantile_{config_key(horizon_days, confidence)}.joblib"
+    return os.path.join(target_dir, filename)
 
 
 def train_model(train_table: pd.DataFrame, confidence: float) -> xgb.XGBRegressor:
@@ -69,12 +81,13 @@ def build_bundle(
     }
 
 
-def save_bundle(bundle: Dict[str, Any]) -> str:
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    target_path = model_path(bundle["horizon_days"], bundle["confidence"])
+def save_bundle(bundle: Dict[str, Any], models_dir: str | None = None) -> str:
+    target_dir = models_dir if models_dir is not None else MODELS_DIR
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = model_path(bundle["horizon_days"], bundle["confidence"], models_dir=target_dir)
 
     # Atomic write using a temporary file in the target directory
-    fd, temp_path = tempfile.mkstemp(dir=MODELS_DIR, prefix="tmp_bundle_", suffix=".joblib")
+    fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix="tmp_bundle_", suffix=".joblib")
     os.close(fd)
     try:
         joblib.dump(bundle, temp_path)
@@ -86,11 +99,44 @@ def save_bundle(bundle: Dict[str, Any]) -> str:
     return target_path
 
 
-def load_bundle(horizon_days: int, confidence: float) -> Dict[str, Any]:
-    path = model_path(horizon_days, confidence)
+def load_bundle(
+    horizon_days: int,
+    confidence: float,
+    models_dir: str | None = None,
+) -> Dict[str, Any]:
+    path = model_path(horizon_days, confidence, models_dir=models_dir)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model bundle not found at {path}")
     return joblib.load(path)
+
+
+def train_grid(
+    features: pd.DataFrame,
+    horizons: Sequence[int],
+    confidences: Sequence[float],
+    models_dir: str | None = None,
+) -> List[Dict[str, Any]]:
+    bundles: List[Dict[str, Any]] = []
+    for horizon in horizons:
+        horizon_table = prepare_horizon_table(features, horizon_days=horizon)
+        split = split_by_date(horizon_table, horizon_days=horizon, test_fraction=TEST_FRACTION)
+        for confidence in confidences:
+            model = train_model(split.train, confidence=confidence)
+            bundle = build_bundle(model, horizon, confidence, split.train)
+            save_bundle(bundle, models_dir=models_dir)
+            bundles.append(bundle)
+    return bundles
+
+
+def load_grid_bundles(
+    horizon_days: int,
+    confidences: Sequence[float],
+    models_dir: str | None = None,
+) -> Dict[float, Dict[str, Any]]:
+    bundles: Dict[float, Dict[str, Any]] = {}
+    for confidence in confidences:
+        bundles[float(confidence)] = load_bundle(horizon_days, confidence, models_dir=models_dir)
+    return bundles
 
 
 def main() -> None:
@@ -98,51 +144,40 @@ def main() -> None:
         raise FileNotFoundError(f"Feature table not found at {FEATURES_PATH}. Run 'python -m src.features' first.")
 
     features = pd.read_parquet(FEATURES_PATH)
-    horizon_table = prepare_horizon_table(features, horizon_days=DEFAULT_HORIZON_DAYS)
-    split = split_by_date(horizon_table, horizon_days=DEFAULT_HORIZON_DAYS, test_fraction=TEST_FRACTION)
+    bundles = train_grid(features, HORIZONS_DAYS, CONFIDENCE_LEVELS)
+    bundles_by_pair = {(b["horizon_days"], b["confidence"]): b for b in bundles}
 
-    model = train_model(split.train, confidence=DEFAULT_CONFIDENCE)
-    bundle = build_bundle(model, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, split.train)
-    saved_path = save_bundle(bundle)
+    rows = []
+    for horizon in HORIZONS_DAYS:
+        horizon_table = prepare_horizon_table(features, horizon_days=horizon)
+        split = split_by_date(horizon_table, horizon_days=horizon, test_fraction=TEST_FRACTION)
+        test_start_str = split.test_start.strftime("%Y-%m-%d")
+        test_targets = split.test["target"].to_numpy()
 
-    train_dates = pd.to_datetime(split.train["date"])
-    train_start_str = train_dates.min().strftime("%Y-%m-%d")
-    train_end_str = train_dates.max().strftime("%Y-%m-%d")
-    test_start_str = split.test_start.strftime("%Y-%m-%d")
+        for conf in CONFIDENCE_LEVELS:
+            bundle = bundles_by_pair[(horizon, conf)]
+            saved_path = model_path(horizon, conf)
+            test_preds = bundle["model"].predict(split.test[FEATURE_COLUMNS])
+            overall_breach = float(np.mean(test_targets < test_preds))
+            pair_label = f"h{horizon}_c{round(conf * 100)}"
+            rel_path = os.path.relpath(saved_path, start=PROJECT_ROOT).replace("\\", "/")
+            rows.append({
+                "pair": pair_label,
+                "train_rows": bundle["n_train_rows"],
+                "train_end": bundle["train_end_date"],
+                "test_start": test_start_str,
+                "path": rel_path,
+                "breach": overall_breach,
+            })
 
-    print("=" * 70)
-    print("QUANTILE BOOSTING MODEL TRAINING SUMMARY")
-    print("=" * 70)
-    print(f"Horizon:            {DEFAULT_HORIZON_DAYS} days")
-    print(f"Confidence:         {int(DEFAULT_CONFIDENCE * 100)}% (alpha = {1.0 - DEFAULT_CONFIDENCE:.2f})")
-    print(f"Train rows used:    {len(split.train):,}")
-    print(f"Train date range:   {train_start_str} to {train_end_str}")
-    print(f"Test start date:    {test_start_str}")
-    print(f"Saved model path:   {saved_path}")
-
-    print("\nFeature Importances:")
-    for feature_name, importance in zip(FEATURE_COLUMNS, model.feature_importances_):
-        print(f"  {feature_name:<28}: {importance:.4f}")
-
-    # Diagnostic breach rate on the test split
-    test_preds = model.predict(split.test[FEATURE_COLUMNS])
-    test_targets = split.test["target"].to_numpy()
-
-    print("\nTest-Set Breach Rate Diagnostic (alpha = 0.05 target):")
-    print(f"{'Asset':<10} {'Asset Class':<12} {'Breach Rate':<15} {'Test Rows':<10}")
-    print("-" * 50)
-
-    for asset in sorted(split.test["asset"].unique()):
-        mask = (split.test["asset"] == asset).to_numpy()
-        asset_class = split.test.loc[mask, "asset_class"].iloc[0]
-        asset_breach = np.mean(test_targets[mask] < test_preds[mask])
-        n_rows = int(mask.sum())
-        print(f"{asset:<10} {asset_class:<12} {asset_breach:>13.2%} {n_rows:>10d}")
-
-    overall_breach = np.mean(test_targets < test_preds)
-    print("-" * 50)
-    print(f"{'OVERALL':<10} {'all':<12} {overall_breach:>13.2%} {len(split.test):>10d}")
-    print("=" * 70)
+    print("=" * 90)
+    print("QUANTILE BOOSTING MODEL GRID TRAINING SUMMARY")
+    print("=" * 90)
+    print(f"{'Pair':<10} {'Train Rows':<12} {'Train End':<12} {'Test Start':<12} {'Saved Path':<32} {'Test Breach':<12}")
+    print("-" * 90)
+    for r in rows:
+        print(f"{r['pair']:<10} {r['train_rows']:<12,d} {r['train_end']:<12} {r['test_start']:<12} {r['path']:<32} {r['breach']:>10.2%}")
+    print("=" * 90)
 
 
 if __name__ == "__main__":

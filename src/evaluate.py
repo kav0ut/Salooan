@@ -14,17 +14,19 @@ from src.baselines import (
     static_quantile,
 )
 from src.config import (
+    CONFIDENCE_LEVELS,
     DEFAULT_CONFIDENCE,
     DEFAULT_HORIZON_DAYS,
     FEATURE_COLUMNS,
     FEATURES_PATH,
+    HORIZONS_DAYS,
     RESULTS_PATH,
     TEST_FRACTION,
 )
-from src.metrics import breach_rate, pinball_loss
+from src.metrics import breach_rate, crossing_rate, pinball_loss
 from src.predict import to_haircut
 from src.split import prepare_horizon_table, split_by_date
-from src.train import load_bundle
+from src.train import config_key, load_bundle, load_grid_bundles
 
 
 def score_method(
@@ -146,75 +148,105 @@ def write_results(results: Dict[str, Any], path: str = RESULTS_PATH) -> None:
             os.remove(temp_path)
 
 
+def evaluate_grid(
+    bundles: Union[Sequence[Dict[str, Any]], Dict[Any, Dict[str, Any]]],
+    features: pd.DataFrame,
+) -> Dict[str, Any]:
+    if isinstance(bundles, dict):
+        bundle_list = list(bundles.values())
+    else:
+        bundle_list = list(bundles)
+
+    configs: Dict[str, Any] = {}
+    for bundle in bundle_list:
+        h = int(bundle["horizon_days"])
+        c = float(bundle["confidence"])
+        key = config_key(h, c)
+        configs[key] = evaluate_config(bundle, features)
+
+    # Build crossing block per horizon from the TEST rows
+    horizons = sorted({int(b["horizon_days"]) for b in bundle_list})
+    crossing: Dict[str, Any] = {}
+
+    for h in horizons:
+        h_table = prepare_horizon_table(features, horizon_days=h)
+        split = split_by_date(h_table, horizon_days=h, test_fraction=TEST_FRACTION)
+        test_X = split.test[FEATURE_COLUMNS]
+
+        # Gather bundles for this horizon sorted by confidence ascending
+        h_bundles = sorted(
+            [b for b in bundle_list if int(b["horizon_days"]) == h],
+            key=lambda b: float(b["confidence"]),
+        )
+        preds_by_conf = {
+            float(b["confidence"]): b["model"].predict(test_X)
+            for b in h_bundles
+        }
+        rate = crossing_rate(preds_by_conf)
+        crossing[f"h{h}"] = {
+            "n_rows": int(len(split.test)),
+            "crossing_rate": float(rate),
+            "confidences": [float(b["confidence"]) for b in h_bundles],
+        }
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "configs": configs,
+        "crossing": crossing,
+    }
+
+
 def main() -> None:
     if not os.path.exists(FEATURES_PATH):
         raise FileNotFoundError(f"Feature table not found at {FEATURES_PATH}. Run 'python -m src.features' first.")
 
     features = pd.read_parquet(FEATURES_PATH)
-    bundle = load_bundle(DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE)
+    bundles = []
+    for horizon in HORIZONS_DAYS:
+        horizon_bundles = load_grid_bundles(horizon, CONFIDENCE_LEVELS)
+        bundles.extend(horizon_bundles.values())
 
-    config_eval = evaluate_config(bundle, features)
-
-    pct = round(DEFAULT_CONFIDENCE * 100)
-    config_key = f"h{DEFAULT_HORIZON_DAYS}_c{pct}"
-
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "configs": {
-            config_key: config_eval,
-        },
-    }
-
+    payload = evaluate_grid(bundles, features)
     write_results(payload, RESULTS_PATH)
 
-    alpha = config_eval["alpha"]
-    methods = config_eval["methods"]
-    comparison = config_eval["comparison"]
+    print("=" * 98)
+    print("MODEL GRID TEST-SET EVALUATION SUMMARY")
+    print("=" * 98)
+    print(
+        f"{'Pair':<10} {'Pinball Loss':<16} {'Breach (Target)':<20} {'Mean Haircut':<16} "
+        f"{'vs Hist (%)':<16} {'vs Static (%)':<16}"
+    )
+    print("-" * 98)
 
-    print("=" * 86)
-    print("TEST-SET EVALUATION SUMMARY: MODEL VS BASELINES")
-    print(f"Horizon: {config_eval['horizon_days']} Days | Confidence: {int(config_eval['confidence'] * 100)}% (alpha = {alpha:.2f})")
-    print(f"Train Rows: {config_eval['n_train_rows']:,} (end: {config_eval['train_end_date']}) | Test Rows: {config_eval['n_test_rows']:,} (start: {config_eval['test_start']})")
-    print("=" * 86)
+    for horizon in HORIZONS_DAYS:
+        for conf in CONFIDENCE_LEVELS:
+            key = config_key(horizon, conf)
+            cfg = payload["configs"][key]
+            m_score = cfg["methods"]["model"]["overall"]
+            loss = m_score["pinball_loss"]
+            breach = m_score["breach_rate"]
+            alpha = cfg["alpha"]
+            haircut = m_score["mean_haircut"]
+            imp_hist = cfg["comparison"]["pinball_improvement_vs_historical_pct"]
+            imp_stat = cfg["comparison"]["pinball_improvement_vs_static_pct"]
 
-    print("\nOVERALL PERFORMANCE BY METHOD:")
-    print(f"{'Method':<16} {'Pinball Loss':<16} {'Breach Rate':<16} {'Mean Haircut':<16}")
-    print("-" * 64)
-    for method_name in ["model", "historical", "static"]:
-        score = methods[method_name]["overall"]
-        label = method_name.capitalize()
-        print(f"{label:<16} {score['pinball_loss']:<16.6f} {score['breach_rate']:>10.2%}     {score['mean_haircut']:>10.2%}")
+            breach_str = f"{breach:>7.2%} ({alpha:>5.1%})"
+            print(
+                f"{key:<10} {loss:<16.6f} {breach_str:<20} {haircut:>12.2%}     "
+                f"{imp_hist:>+11.2f}%   {imp_stat:>+11.2f}%"
+            )
 
-    print("\nPER-ASSET TEST BREACH RATES:")
-    print(f"{'Asset':<10} {'Rows':<8} {'Model Breach':<16} {'Hist Breach':<16} {'Stat Breach':<16}")
-    print("-" * 66)
-    assets = sorted(methods["model"]["per_asset"].keys())
-    for asset in assets:
-        n_rows = methods["model"]["per_asset"][asset]["n_rows"]
-        m_b = methods["model"]["per_asset"][asset]["breach_rate"]
-        h_b = methods["historical"]["per_asset"][asset]["breach_rate"]
-        s_b = methods["static"]["per_asset"][asset]["breach_rate"]
-        print(f"{asset:<10} {n_rows:<8d} {m_b:>11.2%}      {h_b:>11.2%}      {s_b:>11.2%}")
-
-    ov_m = methods["model"]["overall"]["breach_rate"]
-    ov_h = methods["historical"]["overall"]["breach_rate"]
-    ov_s = methods["static"]["overall"]["breach_rate"]
-    print("-" * 66)
-    print(f"{'OVERALL':<10} {config_eval['n_test_rows']:<8d} {ov_m:>11.2%}      {ov_h:>11.2%}      {ov_s:>11.2%}")
-
-    print("\nCOMPARISON BLOCK:")
-    p_vs_stat = comparison["pinball_improvement_vs_static_pct"]
-    p_vs_hist = comparison["pinball_improvement_vs_historical_pct"]
-    dist = comparison["mean_abs_breach_distance_from_alpha"]
-    print(f"  Pinball improvement vs Static:     {p_vs_stat:+.2f}%")
-    print(f"  Pinball improvement vs Historical: {p_vs_hist:+.2f}%")
-    print("  Average absolute distance from alpha:")
-    print(f"    Model:      {dist['model']:.4f}")
-    print(f"    Historical: {dist['historical']:.4f}")
-    print(f"    Static:     {dist['static']:.4f}")
-
-    print(f"\nResults successfully written to: {RESULTS_PATH}")
-    print("=" * 86)
+    print("-" * 98)
+    print("QUANTILE CROSSING DIAGNOSTIC:")
+    for horizon in HORIZONS_DAYS:
+        h_key = f"h{horizon}"
+        cross_data = payload["crossing"][h_key]
+        n_rows = cross_data["n_rows"]
+        rate = cross_data["crossing_rate"]
+        print(f"  Horizon {horizon:>2d}d ({h_key}): test rows = {n_rows:,d} | crossing rate = {rate:>6.2%}")
+    print("=" * 98)
+    print(f"Results successfully written to: {RESULTS_PATH}")
+    print("=" * 98)
 
 
 if __name__ == "__main__":

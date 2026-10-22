@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,7 @@ from src.config import (
     VOLATILITY_COL,
     VOLUME_COL,
 )
+from src.metrics import crossing_rate
 from src.predict import predict_haircuts, predict_quantile_return, to_haircut
 from src.split import prepare_horizon_table, split_by_date
 
@@ -49,6 +50,37 @@ def calculator_result(
         "max_loan": float(row["max_loan"]),
         "collateral_value": float(collateral_value),
     }
+
+
+def latest_crossing(
+    bundles_by_confidence: Mapping[Union[float, str], Dict[str, Any]],
+    features: pd.DataFrame,
+    asset: str,
+) -> Optional[Dict[float, float]]:
+    if "asset" not in features.columns:
+        raise ValueError("Features DataFrame missing 'asset' column.")
+    if asset not in features["asset"].values:
+        raise ValueError(f"Unknown asset '{asset}'. Available assets: {sorted(features['asset'].unique())}")
+
+    asset_features = features[features["asset"] == asset].dropna(subset=FEATURE_COLUMNS)
+    if asset_features.empty:
+        raise ValueError(f"No complete feature rows for asset '{asset}'.")
+
+    latest_row = asset_features.sort_values(by="date").iloc[[-1]]
+
+    predictions: Dict[float, float] = {}
+    metric_input: Dict[float, np.ndarray] = {}
+    for conf, bundle in sorted(bundles_by_confidence.items(), key=lambda item: float(item[0])):
+        c_float = float(conf)
+        pred = float(predict_quantile_return(bundle, latest_row)[0])
+        predictions[c_float] = pred
+        metric_input[c_float] = np.array([pred])
+
+    rate = crossing_rate(metric_input)
+    if rate > 0.0:
+        return predictions
+    return None
+
 
 
 def baseline_haircuts(

@@ -18,6 +18,7 @@ from src.dashboard import (
     baseline_haircuts,
     calculator_result,
     evaluation_tables,
+    latest_crossing,
     load_results,
     risk_band,
     test_period_start,
@@ -348,3 +349,41 @@ def test_functions_do_not_mutate_inputs_or_write_files(tmp_path) -> None:
     assert bundle["train_end_date"] == bundle_copy["train_end_date"]
     assert bundle["feature_columns"] == bundle_copy["feature_columns"]
     assert results == results_copy
+
+
+def test_latest_crossing() -> None:
+    features = make_synthetic_features()
+
+    class DummyModel:
+        def __init__(self, val: float):
+            self.val = val
+
+        def predict(self, X):
+            return np.full(len(X), self.val)
+
+    b_90 = {"model": DummyModel(-0.05), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.90, "horizon_days": 7}
+    b_95 = {"model": DummyModel(-0.10), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.95, "horizon_days": 7}
+    b_99 = {"model": DummyModel(-0.20), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.99, "horizon_days": 7}
+
+    ordered_bundles = {0.90: b_90, 0.95: b_95, 0.99: b_99}
+    # Properly ordered predictions must return None
+    assert latest_crossing(ordered_bundles, features, "BTC_TEST") is None
+
+    # Crossing case: 95% predicts higher return than 90% (-0.02 > -0.05)
+    b_cross_95 = {"model": DummyModel(-0.02), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.95, "horizon_days": 7}
+    crossing_bundles = {0.90: b_90, 0.95: b_cross_95, 0.99: b_99}
+    res = latest_crossing(crossing_bundles, features, "BTC_TEST")
+    assert res is not None
+    assert res[0.90] == pytest.approx(-0.05)
+    assert res[0.95] == pytest.approx(-0.02)
+    assert res[0.99] == pytest.approx(-0.20)
+
+    # Unknown asset raises ValueError
+    with pytest.raises(ValueError, match="Unknown asset"):
+        latest_crossing(ordered_bundles, features, "UNKNOWN_ASSET")
+
+    # Inputs are not mutated
+    features_copy = features.copy(deep=True)
+    _ = latest_crossing(crossing_bundles, features, "BTC_TEST")
+    pd.testing.assert_frame_equal(features, features_copy)
+

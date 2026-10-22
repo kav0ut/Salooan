@@ -59,18 +59,18 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`features.py`** - rolling volatility (std of log returns) and rolling average dollar volume per asset; merges all assets into one feature table. Stretch: max drawdown, correlation with BTC
 - **`split.py`** - prepares horizon modeling table (drops rows with NaN target), chronological train/test split by unique dates with an N-day purge gap. Never shuffle
 - **`baselines.py`** - static (pooled training targets alpha-quantile) and historical (per-asset training targets alpha-quantile) baselines fit on training set only, predicting quantile returns aligned with test set
-- **`metrics.py`** - hand-implemented pinball loss and coverage (breach rate) in numpy with strict input validation
-- **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for a (horizon, confidence) pair using `FEATURE_COLUMNS`; saves bundle with joblib to `models/`
+- **`metrics.py`** - hand-implemented pinball loss, coverage (breach rate) and quantile crossing rate in numpy with strict input validation
+- **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for (horizon, confidence) pairs using `FEATURE_COLUMNS`; `train_grid` trains the full grid (`HORIZONS_DAYS x CONFIDENCE_LEVELS`), `config_key` helper; saves bundles with joblib to `models/`
 - **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
-- **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, scores model and baselines on test split (overall and per asset: n_rows, pinball loss, breach rate, mean haircut), computes comparison block, writes `results/results.json` atomically
+- **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, `evaluate_grid` scores all grid models and baselines on test split, measures crossing rate per horizon, computes comparison block, writes `results/results.json` atomically
 - **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `test_period_start`, `evaluation_tables`), no Streamlit dependency
-- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, two tabs: haircut calculator and evaluation)
+- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, sidebar selects horizon and confidence, two tabs: haircut calculator with crossing warning and evaluation)
 
 ### Data schemas
 - **Raw** (one row per asset per day): `date, open, high, low, close, volume, n_trades, taker_buy_volume, asset, asset_class`. Equities have NaN for `n_trades` and `taker_buy_volume`
 - **Processed** adds: `log_return` and one `target_{N}d` column per horizon in `HORIZONS_DAYS` (simple forward return). Rows with no target (the latest N calendar days) are kept with NaN, because the app needs them for prediction
 - **Feature table**: `asset, asset_class, date, volatility_30d, avg_dollar_volume_30d, target_{N}d`. Rows with incomplete rolling windows are dropped, never filled. Rows with no target are dropped only when building training sets; the latest row per asset is kept for prediction
-- **results.json**: `{"generated_at": <UTC ISO string>, "configs": {"h{N}_c{pct}": {"horizon_days", "confidence", "alpha", "test_start", "train_end_date", "n_train_rows", "n_test_rows", "methods": {"model"|"static"|"historical": {"overall": {...}, "per_asset": {asset: {...}}}}, "comparison": {...}}}}` with plain Python types only
+- **results.json**: `{"generated_at": <UTC ISO string>, "configs": {"h{N}_c{pct}": {"horizon_days", "confidence", "alpha", "test_start", "train_end_date", "n_train_rows", "n_test_rows", "methods": {"model"|"static"|"historical": {"overall": {...}, "per_asset": {asset: {...}}}}, "comparison": {...}}}, "crossing": {"h{N}": {"n_rows", "crossing_rate", "confidences"}}}` with plain Python types only
 
 ### Key design decisions
 - **Granularity**: daily candles, about 3 years of history, completed candles only. Not real-time
@@ -127,6 +127,18 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Caching**: `@st.cache_resource` for model bundle and `@st.cache_data` for DataFrames and computed tables
 - **Footer**: educational project disclaimer, not financial advice
 - **Plots**: Plotly
+- **The grid is every pair** in `HORIZONS_DAYS x CONFIDENCE_LEVELS` from config, one independently trained model per pair, saved as `models/quantile_h{N}_c{pct}.joblib` (naming unchanged).
+- **One source of truth for the config key.** A single helper `config_key(horizon_days, confidence)` returns strings like `h7_c95` and is used by training, evaluation, the app and `results.json`. It lives next to `model_path` (or in config), never re-implemented elsewhere.
+- **CLI behavior changes**: `python -m src.train` now trains the full grid (it used to train only the default pair), and `python -m src.evaluate` now evaluates the full grid and writes all six configs to `results/results.json`. Each model still trains on the purged train split of its own horizon, and each evaluation still uses the stale-model guard.
+- **Quantile crossing is measured, not corrected.** Models at different confidence levels are trained independently, so occasionally a higher-confidence model may predict a smaller loss than a lower-confidence one (the predicted return should be non-increasing as confidence rises). Correcting this is a stretch item (M10). In M8 we only measure and report it:
+  - `crossing_rate(predictions_by_confidence)` in `metrics.py` (hand-implemented numpy): the share of rows where, with confidences sorted ascending, any `q[c_{i+1}] > q[c_i]` (ties are not violations). It needs at least two confidence levels and arrays of equal length.
+  - `results.json` gets a top-level `crossing` block: `{"h7": {"n_rows": ..., "crossing_rate": ..., "confidences": [...]}, "h14": {...}}`, computed on the TEST rows of each horizon.
+  - The calculator tab shows an `st.warning` when, for the selected asset's latest row, the predictions across the three confidence levels of the selected horizon violate the ordering.
+- **Sidebar**: horizon as `st.sidebar.radio` (options from config, shown as "7 days" / "14 days"), confidence as `st.sidebar.select_slider` (options from config, shown as percentages). Remove the read-only "fixed configuration" caption from M7. Default selection is `DEFAULT_HORIZON_DAYS` and `DEFAULT_CONFIDENCE`.
+- **Everything in the app follows the selection**: the loaded bundle, the headline metric labels (for example "Predicted worst-case 14-day drop (99% confidence)"), the baseline haircuts, the risk chart (floor shifted by the selected horizon), the test-period marker, and the Evaluation tab (which uses the selected config key).
+- **Friendly failures** extend to the grid: a missing model file for the selected pair shows an error with the command `python -m src.train`; a missing config key in `results.json` shows a warning with the command `python -m src.evaluate`. Both then call `st.stop()`.
+- **Caching**: the bundle loader (`st.cache_resource`) is keyed by horizon and confidence; DataFrame loaders stay `st.cache_data`.
+- **Limitation to document in the README**: at 99% confidence the test window has very few expected breaches (about 1% of rows, and overlapping returns cluster them), so coverage at 99% is noisy; the 14-day horizon has fewer usable rows than the 7-day one.
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -158,7 +170,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-6 complete and committed. Milestone 7 is ready to commit (`feat: add Streamlit app`). Milestone 8 (Model grid wired to sidebar) is next; its spec will be in `MILESTONES/MILESTONE_8.md`.
+Milestones 0-8 complete (Milestone 8 ready to commit: `feat: add multi-confidence and horizon models`).
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 

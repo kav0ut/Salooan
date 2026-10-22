@@ -5,17 +5,19 @@ import pandas as pd
 import pytest
 
 from src.config import (
+    CONFIDENCE_LEVELS,
     DEFAULT_CONFIDENCE,
     DEFAULT_HORIZON_DAYS,
     FEATURE_COLUMNS,
+    HORIZONS_DAYS,
     TEST_FRACTION,
     VOLATILITY_COL,
     VOLUME_COL,
 )
-from src.evaluate import evaluate_config, score_method, write_results
+from src.evaluate import evaluate_config, evaluate_grid, score_method, write_results
 from src.predict import to_haircut
 from src.split import prepare_horizon_table, split_by_date
-from src.train import build_bundle, train_model
+from src.train import build_bundle, config_key, train_model
 
 
 def make_synthetic_features() -> pd.DataFrame:
@@ -200,3 +202,84 @@ def test_inputs_not_mutated() -> None:
     pd.testing.assert_frame_equal(features, features_copy)
     assert bundle["train_end_date"] == bundle_copy["train_end_date"]
     assert bundle["feature_columns"] == bundle_copy["feature_columns"]
+
+
+def make_synthetic_grid_bundles_and_features():
+    features = make_synthetic_features()
+    horizons = [7, 14]
+    confidences = [0.90, 0.95, 0.99]
+    bundles = []
+    for h in horizons:
+        ht = prepare_horizon_table(features, h)
+        split = split_by_date(ht, h, TEST_FRACTION)
+        for c in confidences:
+            model = train_model(split.train, c)
+            bundle = build_bundle(model, h, c, split.train)
+            bundles.append(bundle)
+    return bundles, features
+
+
+def test_evaluate_grid_keys_methods_and_crossing() -> None:
+    bundles, features = make_synthetic_grid_bundles_and_features()
+    payload = evaluate_grid(bundles, features)
+
+    expected_keys = {
+        config_key(h, c)
+        for h in [7, 14]
+        for c in [0.90, 0.95, 0.99]
+    }
+    assert set(payload["configs"].keys()) == expected_keys
+
+    for key, cfg in payload["configs"].items():
+        assert set(cfg["methods"].keys()) == {"model", "static", "historical"}
+
+    assert set(payload["crossing"].keys()) == {"h7", "h14"}
+    for h_key, cross_data in payload["crossing"].items():
+        assert cross_data["n_rows"] > 0
+        assert 0.0 <= cross_data["crossing_rate"] <= 1.0
+        assert cross_data["confidences"] == [0.90, 0.95, 0.99]
+
+
+def test_evaluate_grid_stale_bundle_raises() -> None:
+    bundles, features = make_synthetic_grid_bundles_and_features()
+    bundles[0]["train_end_date"] = "1999-01-01"
+
+    with pytest.raises(ValueError, match="Stale model bundle"):
+        evaluate_grid(bundles, features)
+
+
+def test_evaluate_grid_json_roundtrip_and_types(tmp_path) -> None:
+    bundles, features = make_synthetic_grid_bundles_and_features()
+    payload = evaluate_grid(bundles, features)
+
+    out_file = tmp_path / "results.json"
+    write_results(payload, path=str(out_file))
+    assert out_file.exists()
+
+    with open(out_file, "r", encoding="utf-8") as f:
+        loaded = json.load(f)
+
+    assert set(loaded.keys()) == {"generated_at", "configs", "crossing"}
+    assert set(loaded["configs"].keys()) == set(payload["configs"].keys())
+    assert set(loaded["crossing"].keys()) == {"h7", "h14"}
+
+    for h_key in ["h7", "h14"]:
+        assert isinstance(loaded["crossing"][h_key]["n_rows"], int)
+        assert isinstance(loaded["crossing"][h_key]["crossing_rate"], float)
+        assert isinstance(loaded["crossing"][h_key]["confidences"], list)
+
+
+def test_evaluate_grid_evaluating_twice_is_identical_except_generated_at() -> None:
+    bundles, features = make_synthetic_grid_bundles_and_features()
+
+    run_1 = evaluate_grid(bundles, features)
+    run_2 = evaluate_grid(bundles, features)
+
+    run_1_copy = copy.deepcopy(run_1)
+    run_2_copy = copy.deepcopy(run_2)
+
+    del run_1_copy["generated_at"]
+    del run_2_copy["generated_at"]
+
+    assert run_1_copy == run_2_copy
+
