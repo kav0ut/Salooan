@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Sequence, Union
+from typing import Any, Dict, Mapping, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ from src.config import (
     VOLATILITY_COL,
     VOLUME_COL,
 )
+from src.metrics import monotone_rearrangement
 from src.split import prepare_horizon_table, split_by_date
 from src.train import load_bundle
 
@@ -69,6 +70,21 @@ def predict_quantile_return(bundle: Dict[str, Any], rows: pd.DataFrame) -> np.nd
     model = bundle["model"]
     preds = model.predict(rows[FEATURE_COLUMNS])
     return np.asarray(preds, dtype=np.float64)
+
+
+def predict_multiquantile(
+    bundles_by_confidence: Mapping[Union[float, str], Dict[str, Any]],
+    X: pd.DataFrame,
+    rearrange: bool = True,
+) -> Dict[Union[float, str], np.ndarray]:
+    predictions: Dict[Union[float, str], np.ndarray] = {}
+    for conf, bundle in bundles_by_confidence.items():
+        predictions[conf] = predict_quantile_return(bundle, X)
+
+    if rearrange and len(predictions) >= 2:
+        return monotone_rearrangement(predictions)
+
+    return predictions
 
 
 def predict_haircuts(

@@ -9,10 +9,12 @@ from src.config import (
     VOLATILITY_COL,
     VOLUME_COL,
 )
+from src.metrics import crossing_rate
 from src.predict import (
     latest_features,
     max_loan,
     predict_haircuts,
+    predict_multiquantile,
     predict_quantile_return,
     to_haircut,
 )
@@ -149,3 +151,31 @@ def test_inputs_not_mutated() -> None:
 
     _ = predict_haircuts(bundle, features, collateral_value=10000.0)
     pd.testing.assert_frame_equal(features, features_copy)
+
+
+def test_predict_multiquantile_monotone_rearrangement() -> None:
+    features = make_synthetic_feature_table()
+
+    class DummyModel:
+        def __init__(self, val: float):
+            self.val = val
+
+        def predict(self, X):
+            return np.full(len(X), self.val)
+
+    # 0.95 predicts -0.02 (violating/crossing with 0.90 predicting -0.05)
+    b_90 = {"model": DummyModel(-0.05), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.90, "horizon_days": 7}
+    b_95 = {"model": DummyModel(-0.02), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.95, "horizon_days": 7}
+    b_99 = {"model": DummyModel(-0.20), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.99, "horizon_days": 7}
+
+    bundles = {0.90: b_90, 0.95: b_95, 0.99: b_99}
+
+    raw_preds = predict_multiquantile(bundles, features, rearrange=False)
+    assert crossing_rate(raw_preds) > 0.0
+
+    rearranged_preds = predict_multiquantile(bundles, features, rearrange=True)
+    assert crossing_rate(rearranged_preds) == pytest.approx(0.0)
+    # 0.90 should get -0.02, 0.95 should get -0.05, 0.99 should get -0.20
+    np.testing.assert_allclose(rearranged_preds[0.90], -0.02)
+    np.testing.assert_allclose(rearranged_preds[0.95], -0.05)
+    np.testing.assert_allclose(rearranged_preds[0.99], -0.20)

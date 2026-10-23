@@ -13,7 +13,13 @@ from src.config import (
     VOLUME_COL,
 )
 from src.metrics import crossing_rate
-from src.predict import predict_haircuts, predict_quantile_return, to_haircut
+from src.predict import (
+    max_loan,
+    predict_haircuts,
+    predict_multiquantile,
+    predict_quantile_return,
+    to_haircut,
+)
 from src.split import prepare_horizon_table, split_by_date
 
 
@@ -29,6 +35,7 @@ def calculator_result(
     features: pd.DataFrame,
     asset: str,
     collateral_value: float,
+    bundles_by_confidence: Optional[Mapping[Union[float, str], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if collateral_value < 0:
         raise ValueError(f"Collateral value cannot be negative, got {collateral_value}")
@@ -40,14 +47,32 @@ def calculator_result(
         raise ValueError(f"Unknown asset '{asset}'. Available assets: {available}")
 
     row = asset_rows.iloc[0]
+    predicted_return = float(row["predicted_return"])
+    haircut = float(row["haircut"])
+    loan_val = float(row["max_loan"])
+
+    if bundles_by_confidence is not None and len(bundles_by_confidence) >= 2:
+        clean = features[features["asset"] == asset].dropna(subset=FEATURE_COLUMNS).copy()
+        if not clean.empty:
+            clean["date"] = pd.to_datetime(clean["date"])
+            latest_row = clean.sort_values(by="date").iloc[[-1]]
+            rearranged = predict_multiquantile(bundles_by_confidence, latest_row, rearrange=True)
+            target_conf = float(bundle.get("confidence", 0.95))
+            for k, preds in rearranged.items():
+                if abs(float(k) - target_conf) < 1e-4:
+                    predicted_return = float(preds[0])
+                    haircut = float(to_haircut(predicted_return))
+                    loan_val = float(max_loan(collateral_value, haircut))
+                    break
+
     return {
         "asset": str(row["asset"]),
         "date": pd.to_datetime(row["date"]),
         "volatility": float(row[VOLATILITY_COL]),
         "avg_dollar_volume": float(row[VOLUME_COL]),
-        "predicted_return": float(row["predicted_return"]),
-        "haircut": float(row["haircut"]),
-        "max_loan": float(row["max_loan"]),
+        "predicted_return": predicted_return,
+        "haircut": haircut,
+        "max_loan": loan_val,
         "collateral_value": float(collateral_value),
     }
 
@@ -109,13 +134,24 @@ def baseline_haircuts(
 
 
 def risk_band(
-    bundle: Dict[str, Any],
-    features: pd.DataFrame,
-    prices: pd.DataFrame,
-    asset: str,
-    horizon_days: int,
+    bundles: Optional[Union[Dict[str, Any], Mapping[Union[float, str], Dict[str, Any]]]] = None,
+    features: Optional[pd.DataFrame] = None,
+    prices: Optional[pd.DataFrame] = None,
+    asset: Optional[str] = None,
+    horizon_days: Optional[int] = None,
     lookback_days: int = 365,
+    bundle: Optional[Dict[str, Any]] = None,
+    bundles_by_confidence: Optional[Mapping[Union[float, str], Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
+    target_bundles = bundles
+    if target_bundles is None:
+        target_bundles = bundles_by_confidence if bundles_by_confidence is not None else bundle
+
+    if target_bundles is None:
+        raise ValueError("bundles or bundle must be provided.")
+    if features is None or prices is None or asset is None or horizon_days is None:
+        raise ValueError("features, prices, asset, and horizon_days are required.")
+
     if "asset" in features.columns:
         asset_features = features[features["asset"] == asset].copy()
     else:
@@ -152,8 +188,9 @@ def risk_band(
         how="inner",
     ).sort_values("date").reset_index(drop=True)
 
+    result_cols = ["date", "close", "floor_date", "floor_price", "floor_90", "floor_95", "floor_99"]
     if merged.empty:
-        return pd.DataFrame(columns=["date", "close", "floor_date", "floor_price"])
+        return pd.DataFrame(columns=result_cols)
 
     if lookback_days is not None:
         if lookback_days <= 0:
@@ -162,11 +199,23 @@ def risk_band(
         cutoff_date = max_date - pd.Timedelta(days=lookback_days)
         merged = merged[merged["date"] >= cutoff_date].reset_index(drop=True)
 
-    q = predict_quantile_return(bundle, merged[FEATURE_COLUMNS])
-    merged["floor_price"] = merged["close"] * (1.0 + q)
     merged["floor_date"] = merged["date"] + pd.Timedelta(days=horizon_days)
 
-    return merged[["date", "close", "floor_date", "floor_price"]].sort_values("date").reset_index(drop=True)
+    if isinstance(target_bundles, dict) and "model" in target_bundles:
+        q = predict_quantile_return(target_bundles, merged[FEATURE_COLUMNS])
+        merged["floor_price"] = merged["close"] * (1.0 + q)
+        merged["floor_90"] = merged["floor_price"]
+        merged["floor_95"] = merged["floor_price"]
+        merged["floor_99"] = merged["floor_price"]
+    else:
+        q_preds = predict_multiquantile(target_bundles, merged[FEATURE_COLUMNS], rearrange=True)
+        q_map = {round(float(k), 2): v for k, v in q_preds.items()}
+        merged["floor_90"] = merged["close"] * (1.0 + q_map[0.90]) if 0.90 in q_map else merged["close"]
+        merged["floor_95"] = merged["close"] * (1.0 + q_map[0.95]) if 0.95 in q_map else merged["close"]
+        merged["floor_99"] = merged["close"] * (1.0 + q_map[0.99]) if 0.99 in q_map else merged["close"]
+        merged["floor_price"] = merged["floor_95"]
+
+    return merged[result_cols].sort_values("date").reset_index(drop=True)
 
 
 def training_cutoff(bundle: Dict[str, Any]) -> pd.Timestamp:
@@ -255,3 +304,46 @@ def evaluation_tables(
     }
 
     return summary_df, per_asset_df, comparison_dict, info_dict
+
+
+def monthly_breach_rates(
+    bundle: Dict[str, Any],
+    features: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = ["month", "n_rows", "n_breaches", "breach_rate", "target_alpha"]
+    if features.empty:
+        return pd.DataFrame(columns=columns)
+
+    horizon_days = int(bundle["horizon_days"])
+    confidence = float(bundle["confidence"])
+    target_alpha = float(1.0 - confidence)
+    target_col = f"target_{horizon_days}d"
+
+    horizon_table = prepare_horizon_table(features, horizon_days=horizon_days)
+    split = split_by_date(horizon_table, horizon_days=horizon_days, test_fraction=TEST_FRACTION)
+    test_rows = split.test.copy()
+
+    if test_rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    q = predict_quantile_return(bundle, test_rows)
+    test_rows["q"] = q
+    target_series = test_rows[target_col] if target_col in test_rows.columns else test_rows["target"]
+    # Strict inequality: breach occurs when realized return is worse than predicted quantile
+    test_rows["is_breach"] = target_series < test_rows["q"]
+    test_rows["month"] = pd.to_datetime(test_rows["date"]).dt.to_period("M").astype(str)
+
+    monthly_stats = []
+    for month, grp in test_rows.groupby("month", sort=True):
+        n_rows = int(len(grp))
+        n_breaches = int(grp["is_breach"].sum())
+        rate = float(n_breaches / n_rows) if n_rows > 0 else 0.0
+        monthly_stats.append({
+            "month": str(month),
+            "n_rows": n_rows,
+            "n_breaches": n_breaches,
+            "breach_rate": rate,
+            "target_alpha": target_alpha,
+        })
+
+    return pd.DataFrame(monthly_stats)

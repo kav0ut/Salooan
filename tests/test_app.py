@@ -222,5 +222,25 @@ def test_app_never_calls_train_model(monkeypatch) -> None:
     assert any("Recommended Haircut" in m.label for m in at.metric)
 
 
+@skip_if_prereqs_missing
+def test_app_evaluation_tab_renders_monthly_breach_chart() -> None:
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+
+    markdown_texts = [m.value for m in at.markdown]
+    assert any("Temporal Breach Distribution (Monthly)" in text for text in markdown_texts)
+
+
+@skip_if_prereqs_missing
+def test_app_crossing_shows_rearrangement_info(monkeypatch) -> None:
+    fake_crossing = {0.90: -0.05, 0.95: -0.02, 0.99: -0.20}
+    monkeypatch.setattr("src.dashboard.latest_crossing", lambda *a, **k: fake_crossing)
+
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+    info_texts = [i.value for i in at.info]
+    assert any("Monotonic quantile rearrangement applied" in text for text in info_texts)
+
+
 
 

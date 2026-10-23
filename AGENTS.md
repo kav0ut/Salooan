@@ -59,13 +59,13 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`features.py`** - rolling volatility (std of log returns) and rolling average dollar volume per asset; merges all assets into one feature table. Stretch: max drawdown, correlation with BTC
 - **`split.py`** - prepares horizon modeling table (drops rows with NaN target), chronological train/test split by unique dates with an N-day purge gap. Never shuffle
 - **`baselines.py`** - static (pooled training targets alpha-quantile) and historical (per-asset training targets alpha-quantile) baselines fit on training set only, predicting quantile returns aligned with test set
-- **`metrics.py`** - hand-implemented pinball loss, coverage (breach rate) and quantile crossing rate in numpy with strict input validation
+- **`metrics.py`** - hand-implemented pinball loss, coverage (breach rate), quantile crossing rate, and monotone quantile rearrangement in numpy with strict input validation
 - **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for (horizon, confidence) pairs using `FEATURE_COLUMNS`; `train_grid` trains the full grid (`HORIZONS_DAYS x CONFIDENCE_LEVELS`), `config_key` helper; saves bundles with joblib to `models/`
-- **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
+- **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`), max loan, and multi-quantile prediction with optional rearrangement
 - **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, `evaluate_grid` scores all grid models and baselines on test split, measures crossing rate per horizon, computes comparison block, writes `results/results.json` atomically
 - **`refresh.py`** - data refresh with cooldown, status tracking, lock file, incremental ingestion, preprocessing and feature table rebuild; never trains or evaluates
-- **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `latest_crossing`, `training_cutoff`, `newer_data_days`, `evaluation_tables`), no Streamlit dependency
-- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, sidebar selects horizon/confidence and has Data section with refresh button/status, two tabs: haircut calculator with crossing warning and evaluation)
+- **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `latest_crossing`, `training_cutoff`, `newer_data_days`, `evaluation_tables`, `monthly_breach_rates`), no Streamlit dependency
+- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, sidebar selects horizon/confidence and has Data section with refresh button/status, two tabs: haircut calculator with multi-tier risk corridor and evaluation with monthly breach timeline)
 
 ### Data schemas
 - **Raw** (one row per asset per day): `date, open, high, low, close, volume, n_trades, taker_buy_volume, asset, asset_class`. Equities have NaN for `n_trades` and `taker_buy_volume`
@@ -155,6 +155,9 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Friendly failures** extend to the grid: a missing model file for the selected pair shows an error with the command `python -m src.train`; a missing config key in `results.json` shows a warning with the command `python -m src.evaluate`. Both then call `st.stop()`.
 - **Caching**: the bundle loader (`st.cache_resource`) is keyed by horizon and confidence; DataFrame loaders stay `st.cache_data`.
 - **Limitation to document in the README**: at 99% confidence the test window has very few expected breaches (about 1% of rows, and overlapping returns cluster them), so coverage at 99% is noisy; the 14-day horizon has fewer usable rows than the 7-day one.
+- **Monotonic quantile rearrangement** (Chernozhukov, Fernández-Val, and Galichon 2010): models for different confidence levels are trained independently, which occasionally leads to crossing ($q_{0.95} > q_{0.90}$). Sorting predicted quantile returns descending across ascending confidence levels mathematically guarantees that $q_{0.90} \ge q_{0.95} \ge q_{0.99}$ (larger loss for higher confidence) on every single sample. Hand-implemented in `src/metrics.py:monotone_rearrangement`.
+- **Multi-quantile risk corridor on the price chart**: instead of plotting a single dashed line for only the selected confidence, `risk_band` computes floor lines across confidences, and the risk chart renders a shaded corridor between 90% and 99% floors with the 95% floor as an interior line.
+- **Temporal breach distribution (Breach-by-Month)**: in `src/dashboard.py`, `monthly_breach_rates(bundle, features)` evaluates out-of-sample test rows grouped by calendar month (`YYYY-MM`). The Evaluation tab renders a monthly bar chart with a horizontal line at target $\alpha$, visually demonstrating how breaches cluster during market stress due to overlapping multi-day returns.
 
 ## Technology Stack
 - **Language**: Python 3.10+
@@ -180,13 +183,13 @@ One commit per milestone.
 | 7 | Streamlit app (calculator and evaluation tab) | `feat: add Streamlit app` |
 | 8 | Model grid (confidence x horizon) wired to the sidebar | `feat: add multi-confidence and horizon models` |
 | 9 | Refresh button with cooldown | `feat: add data refresh with cooldown` |
-| 10 | Stretch items | `feat: add <stretch item>` |
+| 10 | Monotonic risk band and monthly breach analysis | `feat: add monotonic risk band and monthly breach analysis` |
 | 11 | README with workflow diagram, results, limitations | `docs: write README with results` |
 
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-9 complete (Milestone 9 ready to commit: `feat: add data refresh with cooldown`).
+Milestones 0-10 complete (Milestone 10 ready to commit: `feat: add monotonic risk band and monthly breach analysis`). Spec in `MILESTONES/MILESTONE_10.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 

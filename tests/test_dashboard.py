@@ -20,6 +20,7 @@ from src.dashboard import (
     evaluation_tables,
     latest_crossing,
     load_results,
+    monthly_breach_rates,
     newer_data_days,
     risk_band,
     test_period_start,
@@ -304,6 +305,37 @@ def test_risk_band_drops_missing_features() -> None:
     assert nan_date not in rb["date"].values
 
 
+def test_risk_band_multi_bundles() -> None:
+    _, features = make_synthetic_bundle_and_features()
+    prices = pd.DataFrame({
+        "asset": features["asset"],
+        "date": features["date"],
+        "close": 100.0,
+    })
+
+    class DummyModel:
+        def __init__(self, val: float):
+            self.val = val
+
+        def predict(self, X):
+            return np.full(len(X), self.val)
+
+    # Note that 95% (-0.02) raw model crosses with 90% (-0.05)
+    b_90 = {"model": DummyModel(-0.05), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.90, "horizon_days": 7}
+    b_95 = {"model": DummyModel(-0.02), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.95, "horizon_days": 7}
+    b_99 = {"model": DummyModel(-0.20), "feature_columns": list(FEATURE_COLUMNS), "confidence": 0.99, "horizon_days": 7}
+
+    bundles = {0.90: b_90, 0.95: b_95, 0.99: b_99}
+    rb = risk_band(bundles, features, prices, "BTC_TEST", DEFAULT_HORIZON_DAYS, lookback_days=30)
+
+    for col in ["date", "close", "floor_date", "floor_90", "floor_95", "floor_99"]:
+        assert col in rb.columns
+
+    # Monotonic risk corridor ordering: floor_90 >= floor_95 >= floor_99
+    assert (rb["floor_90"] >= rb["floor_95"]).all()
+    assert (rb["floor_95"] >= rb["floor_99"]).all()
+
+
 def test_test_period_start() -> None:
     _, features = make_synthetic_bundle_and_features()
 
@@ -367,6 +399,7 @@ def test_functions_do_not_mutate_inputs_or_write_files(tmp_path) -> None:
     _ = newer_data_days(bundle, features)
     _ = test_period_start(features, DEFAULT_HORIZON_DAYS)
     _ = evaluation_tables(results, "h7_c95")
+    _ = monthly_breach_rates(bundle, features)
 
     files_after = set(os.listdir(tmp_path))
     assert files_before == files_after
@@ -433,5 +466,64 @@ def test_newer_data_days() -> None:
 
     # Empty df returns 0
     assert newer_data_days(bundle, pd.DataFrame()) == 0
+
+
+def test_monthly_breach_rates_computes_correct_counts_and_rates() -> None:
+    bundle, features = make_synthetic_bundle_and_features()
+    res = monthly_breach_rates(bundle, features)
+
+    assert not res.empty
+    expected_cols = ["month", "n_rows", "n_breaches", "breach_rate", "target_alpha"]
+    assert list(res.columns) == expected_cols
+
+    # target_alpha is 1 - confidence
+    expected_alpha = 1.0 - float(bundle["confidence"])
+    np.testing.assert_allclose(res["target_alpha"], expected_alpha)
+
+    # breach_rate equals n_breaches / n_rows for each month
+    for _, row in res.iterrows():
+        assert row["n_rows"] > 0
+        assert 0 <= row["n_breaches"] <= row["n_rows"]
+        assert row["breach_rate"] == pytest.approx(row["n_breaches"] / row["n_rows"])
+
+    # Output is ordered chronologically by month
+    assert res["month"].is_monotonic_increasing
+
+
+def test_monthly_breach_rates_sum_equals_total_test_rows() -> None:
+    bundle, features = make_synthetic_bundle_and_features()
+    ht = prepare_horizon_table(features, DEFAULT_HORIZON_DAYS)
+    split = split_by_date(ht, DEFAULT_HORIZON_DAYS, TEST_FRACTION)
+
+    res = monthly_breach_rates(bundle, features)
+    assert res["n_rows"].sum() == len(split.test)
+
+
+def test_monthly_breach_rates_zero_breaches() -> None:
+    bundle, features = make_synthetic_bundle_and_features()
+
+    class FloorDummyModel:
+        def predict(self, X):
+            return np.full(len(X), -100.0)
+
+    safe_bundle = copy.deepcopy(bundle)
+    safe_bundle["model"] = FloorDummyModel()
+
+    res = monthly_breach_rates(safe_bundle, features)
+    assert not res.empty
+    assert res["n_breaches"].sum() == 0
+    assert (res["breach_rate"] == 0.0).all()
+
+
+def test_monthly_breach_rates_inputs_not_mutated() -> None:
+    bundle, features = make_synthetic_bundle_and_features()
+    features_copy = features.copy(deep=True)
+    bundle_copy = copy.deepcopy(bundle)
+
+    _ = monthly_breach_rates(bundle, features)
+
+    pd.testing.assert_frame_equal(features, features_copy)
+    assert bundle["train_end_date"] == bundle_copy["train_end_date"]
+    assert bundle["confidence"] == bundle_copy["confidence"]
 
 

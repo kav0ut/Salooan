@@ -30,6 +30,7 @@ from src.dashboard import (
     evaluation_tables,
     latest_crossing,
     load_results,
+    monthly_breach_rates,
     newer_data_days,
     risk_band,
     training_cutoff,
@@ -194,21 +195,20 @@ if "refresh_res" in st.session_state:
 tab_calc, tab_eval = st.tabs(["Haircut calculator", "Evaluation"])
 
 with tab_calc:
-    # Diagnostic warning if quantile crossing is detected for this asset across confidences
+    horizon_bundles = get_horizon_bundles(selected_horizon)
     try:
-        horizon_bundles = get_horizon_bundles(selected_horizon)
         crossing_dict = latest_crossing(horizon_bundles, features, selected_asset)
         if crossing_dict is not None:
             details = ", ".join([f"{round(c * 100)}%: {val:.2%}" for c, val in crossing_dict.items()])
-            st.warning(
-                f"Quantile crossing detected for {selected_asset} at {selected_horizon}-day horizon: "
-                f"predicted returns across confidence levels violate monotonic ordering ({details}). "
-                "Higher confidence models should predict larger or equal projected drops."
+            st.info(
+                f"Monotonic quantile rearrangement applied: raw model outputs crossed across confidence levels ({details}). "
+                "Monotonic rearrangement was applied to ensure consistent risk sizing across confidence levels "
+                "so that higher confidence models always predict larger or equal projected drops."
             )
     except Exception:
         pass
 
-    calc = calculator_result(bundle, features, selected_asset, collateral)
+    calc = calculator_result(bundle, features, selected_asset, collateral, bundles_by_confidence=horizon_bundles)
 
     conf_pct = round(selected_confidence * 100)
     col1, col2, col3 = st.columns(3)
@@ -262,10 +262,10 @@ with tab_calc:
     )
     st.plotly_chart(fig_hc, width="stretch")
 
-    st.markdown("### Price History & Predicted Floor Line")
+    st.markdown("### Price History & Predicted Risk Corridor")
     prices = get_prices(selected_asset)
     band = risk_band(
-        bundle,
+        horizon_bundles,
         features,
         prices,
         selected_asset,
@@ -275,19 +275,39 @@ with tab_calc:
     t_cutoff = training_cutoff(bundle)
 
     fig_risk = go.Figure()
+    # 90% floor line
+    fig_risk.add_trace(go.Scatter(
+        x=band["floor_date"],
+        y=band["floor_90"],
+        mode="lines",
+        name=f"Floor 90% (t+{selected_horizon}d)",
+        line=dict(color="rgba(220, 38, 38, 0.45)", width=1, dash="dash"),
+    ))
+    # 99% floor line with corridor shading between 90% and 99%
+    fig_risk.add_trace(go.Scatter(
+        x=band["floor_date"],
+        y=band["floor_99"],
+        mode="lines",
+        name=f"Floor 99% (t+{selected_horizon}d)",
+        line=dict(color="rgba(153, 27, 27, 0.8)", width=1, dash="dash"),
+        fill="tonexty",
+        fillcolor="rgba(239, 68, 68, 0.12)",
+    ))
+    # 95% floor line
+    fig_risk.add_trace(go.Scatter(
+        x=band["floor_date"],
+        y=band["floor_95"],
+        mode="lines",
+        name=f"Floor 95% (t+{selected_horizon}d)",
+        line=dict(color="#dc2626", width=1.8, dash="dash"),
+    ))
+    # Close price on top
     fig_risk.add_trace(go.Scatter(
         x=band["date"],
         y=band["close"],
         mode="lines",
         name="Close Price",
-        line=dict(color="#1e293b", width=1.8),
-    ))
-    fig_risk.add_trace(go.Scatter(
-        x=band["floor_date"],
-        y=band["floor_price"],
-        mode="lines",
-        name=f"Predicted Floor (t+{selected_horizon}d)",
-        line=dict(color="#dc2626", width=1.5, dash="dash"),
+        line=dict(color="#1e293b", width=2),
     ))
 
     t_cutoff_date = str(t_cutoff.date())
@@ -308,11 +328,10 @@ with tab_calc:
     st.plotly_chart(fig_risk, width="stretch")
 
     st.caption(
-        f"The dashed red line is the model's predicted floor price for date t + {selected_horizon}. "
-        "Breaches occur when the closing price dips below this floor. "
-        "Predictions before the vertical dotted line were made on training data (in-sample); "
-        f"predictions after it are strictly out-of-sample. The final {selected_horizon} days of the floor extend "
-        "beyond the last price date into the future (live prediction)."
+        f"The shaded band represents the multi-tier risk corridor between the 90% and 99% predicted floor prices for date t + {selected_horizon}, "
+        "with the interior dashed line showing the 95% floor. Breaches occur when the closing price dips below the floor line. "
+        "Predictions before the vertical dotted line were made on training data (in-sample); predictions after it are strictly out-of-sample. "
+        f"The final {selected_horizon} days extend beyond the last observed price date into the future (live prediction)."
     )
 
 with tab_eval:
@@ -397,6 +416,39 @@ with tab_eval:
         "With a 20% test fraction, realized breach rates carry natural clustering noise; small deviations "
         f"from the target alpha ({alpha_val:.1%}) do not indicate model failure."
     )
+
+    st.markdown("### Temporal Breach Distribution (Monthly)")
+    monthly_df = monthly_breach_rates(bundle, features)
+    if not monthly_df.empty:
+        fig_monthly = px.bar(
+            monthly_df,
+            x="month",
+            y="breach_rate",
+            labels={"month": "Month", "breach_rate": "Breach Rate"},
+            color_discrete_sequence=["#2563eb"],
+        )
+        target_a = 1.0 - float(bundle["confidence"])
+        fig_monthly.add_hline(
+            y=target_a,
+            line_dash="dash",
+            line_color="#dc2626",
+            annotation_text=f"Target alpha ({target_a:.1%})",
+            annotation_position="top right",
+        )
+        fig_monthly.update_layout(
+            yaxis_tickformat=".1%",
+            xaxis_title="Month",
+            yaxis_title="Realized Breach Rate",
+            height=350,
+            margin=dict(l=20, r=20, t=30, b=20),
+        )
+        st.plotly_chart(fig_monthly, width="stretch")
+
+        st.caption(
+            "Temporal clustering of breaches: In stress months (such as market crashes), realized breach rates can significantly exceed target alpha. "
+            "This clustering occurs because forward-return targets over multi-day horizons (e.g. 7 or 14 calendar days) overlap across consecutive days, "
+            "so a single market shock affects multiple consecutive evaluations."
+        )
 
 st.markdown("---")
 st.caption("Educational machine learning project. This dashboard is for demonstration only and does not constitute financial or lending advice.")

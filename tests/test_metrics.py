@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from sklearn.metrics import mean_pinball_loss
 
-from src.metrics import breach_rate, crossing_rate, pinball_loss
+from src.metrics import breach_rate, crossing_rate, monotone_rearrangement, pinball_loss
 
 
 def test_pinball_loss_hand_computed_symmetric() -> None:
@@ -212,4 +212,105 @@ def test_crossing_rate_inputs_not_mutated() -> None:
 
     np.testing.assert_array_equal(arr1, copy1)
     np.testing.assert_array_equal(arr2, copy2)
+
+
+def test_monotone_rearrangement_crossing_to_sorted() -> None:
+    # Row 0 crosses: 0.95 return (-0.02) is greater than 0.90 return (-0.05)
+    # Row 1 is already ordered: -0.06 >= -0.12 >= -0.25
+    preds = {
+        0.90: np.array([-0.05, -0.06]),
+        0.95: np.array([-0.02, -0.12]),
+        0.99: np.array([-0.15, -0.25]),
+    }
+    assert crossing_rate(preds) > 0.0
+
+    rearranged = monotone_rearrangement(preds)
+    assert set(rearranged.keys()) == {0.90, 0.95, 0.99}
+
+    # Row 0 values [-0.05, -0.02, -0.15] sorted descending become [-0.02, -0.05, -0.15]
+    np.testing.assert_allclose(rearranged[0.90], [-0.02, -0.06])
+    np.testing.assert_allclose(rearranged[0.95], [-0.05, -0.12])
+    np.testing.assert_allclose(rearranged[0.99], [-0.15, -0.25])
+
+    # Guaranteed zero crossing rate after rearrangement
+    assert crossing_rate(rearranged) == pytest.approx(0.0)
+
+
+def test_monotone_rearrangement_already_monotone_unchanged() -> None:
+    preds = {
+        0.90: np.array([-0.05, -0.04, -0.03]),
+        0.95: np.array([-0.10, -0.08, -0.07]),
+        0.99: np.array([-0.20, -0.18, -0.15]),
+    }
+    rearranged = monotone_rearrangement(preds)
+    for conf in [0.90, 0.95, 0.99]:
+        np.testing.assert_array_equal(rearranged[conf], preds[conf])
+    assert crossing_rate(rearranged) == pytest.approx(0.0)
+
+
+def test_monotone_rearrangement_ties_preserved() -> None:
+    preds = {
+        0.90: np.array([-0.10, -0.05]),
+        0.95: np.array([-0.10, -0.05]),
+        0.99: np.array([-0.10, -0.05]),
+    }
+    rearranged = monotone_rearrangement(preds)
+    for conf in [0.90, 0.95, 0.99]:
+        np.testing.assert_array_equal(rearranged[conf], preds[conf])
+    assert crossing_rate(rearranged) == pytest.approx(0.0)
+
+
+def test_monotone_rearrangement_validation_errors() -> None:
+    # Single confidence
+    with pytest.raises(ValueError, match="at least two"):
+        monotone_rearrangement({0.95: np.array([-0.10, -0.05])})
+
+    # Length mismatch
+    with pytest.raises(ValueError, match="Length mismatch"):
+        monotone_rearrangement({0.90: np.array([-0.05, -0.05]), 0.95: np.array([-0.10])})
+
+    # Empty inputs
+    with pytest.raises(ValueError, match="empty"):
+        monotone_rearrangement({0.90: np.array([]), 0.95: np.array([])})
+
+    # NaN in inputs
+    with pytest.raises(ValueError, match="NaN"):
+        monotone_rearrangement({0.90: np.array([-0.05, np.nan]), 0.95: np.array([-0.10, -0.10])})
+
+    # Inf in inputs
+    with pytest.raises(ValueError, match="infinite"):
+        monotone_rearrangement({0.90: np.array([-0.05, np.inf]), 0.95: np.array([-0.10, -0.10])})
+
+
+def test_monotone_rearrangement_inputs_not_mutated() -> None:
+    arr1 = np.array([-0.05, -0.04])
+    arr2 = np.array([-0.02, -0.08])
+    c1 = arr1.copy()
+    c2 = arr2.copy()
+
+    _ = monotone_rearrangement({0.90: arr1, 0.95: arr2})
+
+    np.testing.assert_array_equal(arr1, c1)
+    np.testing.assert_array_equal(arr2, c2)
+
+
+def test_monotone_rearrangement_2d_array() -> None:
+    # Matrix of shape (2, 3): row 0 crosses
+    mat = np.array([
+        [-0.05, -0.02, -0.15],
+        [-0.04, -0.08, -0.12],
+    ])
+    sorted_mat = monotone_rearrangement(mat)
+    expected = np.array([
+        [-0.02, -0.05, -0.15],
+        [-0.04, -0.08, -0.12],
+    ])
+    np.testing.assert_allclose(sorted_mat, expected)
+
+    # Validation errors on 2D array
+    with pytest.raises(ValueError, match="2D numpy array"):
+        monotone_rearrangement(np.array([-0.05, -0.02]))
+
+    with pytest.raises(ValueError, match="at least two"):
+        monotone_rearrangement(np.array([[-0.05], [-0.02]]))
 

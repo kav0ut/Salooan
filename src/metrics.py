@@ -1,4 +1,4 @@
-from typing import Mapping, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
@@ -107,3 +107,69 @@ def crossing_rate(
     diffs = np.diff(matrix, axis=1)
     violating_rows = np.any(diffs > 0, axis=1)
     return float(np.mean(violating_rows))
+
+
+def monotone_rearrangement(
+    predictions_by_confidence: Union[
+        Mapping[Union[float, str], Union[np.ndarray, pd.Series, Sequence[float]]],
+        np.ndarray,
+    ],
+) -> Union[Dict[Union[float, str], np.ndarray], np.ndarray]:
+    if isinstance(predictions_by_confidence, np.ndarray):
+        arr_2d = np.asarray(predictions_by_confidence, dtype=np.float64)
+        if arr_2d.ndim != 2:
+            raise ValueError(f"2D numpy array required, got ndim={arr_2d.ndim}.")
+        if arr_2d.shape[1] < 2:
+            raise ValueError("monotone_rearrangement requires at least two confidence columns.")
+        if arr_2d.shape[0] == 0:
+            raise ValueError("Prediction array cannot be empty.")
+        if np.isnan(arr_2d).any():
+            raise ValueError("Prediction array cannot contain NaN values.")
+        if np.isinf(arr_2d).any():
+            raise ValueError("Prediction array cannot contain infinite values.")
+        # Returns sorted descending along axis 1 (larger drop for higher confidence)
+        return -np.sort(-arr_2d, axis=1)
+
+    if len(predictions_by_confidence) < 2:
+        raise ValueError("monotone_rearrangement requires at least two confidence levels.")
+
+    sorted_keys = sorted(predictions_by_confidence.keys(), key=float)
+    arrays = []
+    expected_len = None
+
+    for conf in sorted_keys:
+        val = predictions_by_confidence[conf]
+        if isinstance(val, pd.Series):
+            arr = val.to_numpy(dtype=np.float64, copy=True)
+        else:
+            arr = np.asarray(val, dtype=np.float64)
+
+        if arr.ndim != 1:
+            arr = arr.ravel()
+
+        if len(arr) == 0:
+            raise ValueError("Prediction arrays cannot be empty.")
+
+        if expected_len is None:
+            expected_len = len(arr)
+        elif len(arr) != expected_len:
+            raise ValueError(f"Length mismatch: expected {expected_len}, got {len(arr)}.")
+
+        if np.isnan(arr).any():
+            raise ValueError("Prediction arrays cannot contain NaN values.")
+
+        if np.isinf(arr).any():
+            raise ValueError("Prediction arrays cannot contain infinite values.")
+
+        arrays.append(arr)
+
+    matrix = np.column_stack(arrays)
+    # Sort descending along columns: higher confidence must have more negative return
+    rearranged_matrix = -np.sort(-matrix, axis=1)
+
+    result = {}
+    for key in predictions_by_confidence.keys():
+        col_idx = sorted_keys.index(key)
+        result[key] = rearranged_matrix[:, col_idx]
+
+    return result
