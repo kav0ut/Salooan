@@ -88,12 +88,16 @@ def baseline_haircuts(
     horizon_days: int,
     confidence: float,
     asset: str,
+    train_end_date: Any,
 ) -> Dict[str, float]:
     horizon_table = prepare_horizon_table(features, horizon_days=horizon_days)
-    split = split_by_date(horizon_table, horizon_days=horizon_days, test_fraction=TEST_FRACTION)
+    cutoff = pd.to_datetime(train_end_date)
+    train_rows = horizon_table[pd.to_datetime(horizon_table["date"]) <= cutoff]
+    if train_rows.empty:
+        raise ValueError("No training rows found up to train_end_date.")
 
-    q_stat = static_quantile(split.train, confidence)
-    q_hist = historical_quantiles(split.train, confidence)
+    q_stat = static_quantile(train_rows, confidence)
+    q_hist = historical_quantiles(train_rows, confidence)
 
     if asset not in q_hist:
         raise ValueError(f"Asset '{asset}' not found in training set. Available assets: {sorted(q_hist.keys())}")
@@ -163,6 +167,24 @@ def risk_band(
     merged["floor_date"] = merged["date"] + pd.Timedelta(days=horizon_days)
 
     return merged[["date", "close", "floor_date", "floor_price"]].sort_values("date").reset_index(drop=True)
+
+
+def training_cutoff(bundle: Dict[str, Any]) -> pd.Timestamp:
+    val = bundle.get("train_end_date")
+    if val is None:
+        raise KeyError("Bundle missing 'train_end_date'.")
+    return pd.to_datetime(val)
+
+
+def newer_data_days(bundle: Dict[str, Any], features: pd.DataFrame) -> int:
+    val = bundle.get("train_end_date")
+    if val is None:
+        raise KeyError("Bundle missing 'train_end_date'.")
+    if features.empty or "date" not in features.columns:
+        return 0
+    cutoff = pd.to_datetime(val).floor("D")
+    latest = pd.to_datetime(features["date"].max()).floor("D")
+    return int((latest - cutoff).days)
 
 
 def test_period_start(features: pd.DataFrame, horizon_days: int) -> pd.Timestamp:

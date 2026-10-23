@@ -63,8 +63,9 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **`train.py`** - trains `XGBRegressor` with `reg:quantileerror` on the purged train split for (horizon, confidence) pairs using `FEATURE_COLUMNS`; `train_grid` trains the full grid (`HORIZONS_DAYS x CONFIDENCE_LEVELS`), `config_key` helper; saves bundles with joblib to `models/`
 - **`predict.py`** - loads model bundle, validates feature columns, predicts quantile return for latest feature row per asset, converts to haircut (`clip(-q, 0, 1)`) and max loan
 - **`evaluate.py`** - pure core `evaluate_config(bundle, features)` with stale-model guard, `evaluate_grid` scores all grid models and baselines on test split, measures crossing rate per horizon, computes comparison block, writes `results/results.json` atomically
-- **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `test_period_start`, `evaluation_tables`), no Streamlit dependency
-- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, sidebar selects horizon and confidence, two tabs: haircut calculator with crossing warning and evaluation)
+- **`refresh.py`** - data refresh with cooldown, status tracking, lock file, incremental ingestion, preprocessing and feature table rebuild; never trains or evaluates
+- **`dashboard.py`** - pure helper functions for Streamlit UI (`load_results`, `calculator_result`, `baseline_haircuts`, `risk_band`, `latest_crossing`, `training_cutoff`, `newer_data_days`, `evaluation_tables`), no Streamlit dependency
+- **`app.py`** (project root) - Streamlit dashboard UI (thin layout, calls `src/dashboard.py`, sidebar selects horizon/confidence and has Data section with refresh button/status, two tabs: haircut calculator with crossing warning and evaluation)
 
 ### Data schemas
 - **Raw** (one row per asset per day): `date, open, high, low, close, volume, n_trades, taker_buy_volume, asset, asset_class`. Equities have NaN for `n_trades` and `taker_buy_volume`
@@ -80,7 +81,22 @@ The Streamlit app reads only saved models, processed data and results. It never 
 - **Model**: quantile / pinball loss objective at alpha = 1 - confidence (e.g. 0.05 for 95%), one model per (confidence, horizon) pair
 - **Assets**: crypto BTCUSDT, ETHUSDT, ADAUSDT, DOGEUSDT (Binance); equities SPY, ARKK (yfinance). Chosen to give a spread of volatility and liquidity
 - **Evaluation**: pinball loss and coverage, always compared against both baselines. Coverage should be close to alpha. Note that overlapping N-day returns make breaches cluster, so don't over-read small coverage differences
-- **Refresh rule**: the app's refresh button is allowed only when a new daily candle could exist (last saved candle is older than yesterday, UTC). It refreshes data and features only; retraining is a separate, rarer action
+- **What the refresh button does**: it refreshes DATA only. It pulls new candles (incremental), re-runs preprocessing and feature building, clears the app's data caches and reruns the page. It NEVER trains or evaluates anything. Retraining stays a separate command-line action.
+- **When the refresh button is allowed** (the refresh rule plus a retry limit):
+  1. A new daily candle could exist: the latest saved crypto candle date is older than yesterday in UTC. The reference is the oldest of the four crypto assets' latest dates (any lagging asset makes a refresh worthwhile). Equities are ignored for this rule because they skip weekends and holidays, but they are refreshed together with the crypto assets.
+  2. At least `REFRESH_MIN_INTERVAL_MINUTES` (60) have passed since the last refresh ATTEMPT, whether it succeeded or failed. This stops repeated clicks from hammering the APIs after a failure.
+  When not allowed, the button is disabled and the sidebar says why ("Data is up to date as of ...", or "Next refresh possible at ... UTC").
+- **Pure, injectable core** in `src/refresh.py`: the decision (`refresh_state`) takes the current time, the latest saved candle date and the status as arguments, and all time handling uses timezone-aware UTC datetimes (naive datetimes raise `ValueError`).
+- **Status file** `REFRESH_STATUS_PATH` (inside `data/processed/`, which is gitignored), JSON: `last_attempt_utc`, `last_success_utc`, `last_error`, `rows_added` (per asset). Written atomically (temp file, then `os.replace`). A missing or corrupt file is treated as "no status", never as a crash.
+- **Lock file** `REFRESH_LOCK_PATH`: created with exclusive-create semantics so two browser tabs cannot refresh at once. A lock older than `REFRESH_LOCK_TIMEOUT_MINUTES` (15) is considered stale and replaced. The lock is always released, including when the refresh raises.
+- **Failure behavior**: existing files are never corrupted (writes are atomic). Each asset is ingested independently; one failing asset does not stop the others. Preprocessing and features are rebuilt only when at least one asset gained rows. Errors are stored in the status file and shown in the app with `st.error`; the app keeps working on the old data.
+- **After a refresh the models are older than the data**, which is expected. To keep everything consistent without retraining:
+  - **Baselines are fit on the same rows the models were evaluated against**: `baseline_haircuts` uses the modeling-table rows with `date <= bundle["train_end_date"]` (identical to the old split's train set before any refresh, and fixed afterwards).
+  - **The chart marker** changes from the recomputed `test_start` to the bundle's `train_end_date`, labelled "model trained on data up to this date; everything after it is out-of-sample" (new data after a refresh is genuinely out-of-sample for the model).
+  - **The Evaluation tab keeps reading `results.json`** and says so: evaluation reflects the last `python -m src.evaluate` run, with its own `test_start`.
+  - `python -m src.evaluate` will raise its stale-model error after a refresh, by design. The message already says to retrain. The sidebar shows the retrain command when the newest feature date is more than `RETRAIN_SUGGEST_AFTER_DAYS` (60) after the bundle's `train_end_date`.
+- **Caching**: after a successful refresh, `st.cache_data` is cleared (the bundle loader uses `st.cache_resource` and does not need clearing), the success message is kept across the rerun via `st.session_state`, and the app calls `st.rerun()`.
+- **Time source**: only `app.py` calls `datetime.now(timezone.utc)`; everything else receives `now` as an argument.
 - **Streamlit**: never retrain on a widget interaction. Load saved models with `@st.cache_resource` and data with `@st.cache_data`
 - **Known limitations** (document in README): daily close is not a forced-sale price, no real bid-ask spread data, overlapping returns, crypto and equity calendars differ
 - **Features**: two features only to start: rolling volatility and rolling average dollar volume. Anything else (drawdown, correlation, volume trend) is a stretch item in M10
@@ -170,7 +186,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-8 complete (Milestone 8 ready to commit: `feat: add multi-confidence and horizon models`).
+Milestones 0-9 complete (Milestone 9 ready to commit: `feat: add data refresh with cooldown`).
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 

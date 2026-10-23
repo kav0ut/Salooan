@@ -137,4 +137,90 @@ def test_app_friendly_failure_on_missing_model(monkeypatch) -> None:
         st.cache_resource.clear()
 
 
+@skip_if_prereqs_missing
+def test_app_refresh_up_to_date(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.refresh.refresh_state",
+        lambda *a, **k: {"allowed": False, "reason": "up_to_date", "message": "Data is up to date as of 2026-10-22"},
+    )
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+    assert len(at.sidebar.button) >= 1
+    assert at.sidebar.button[0].disabled is True
+    assert any("up to date" in c.value for c in at.sidebar.caption)
+
+
+@skip_if_prereqs_missing
+def test_app_refresh_stale_and_allowed(monkeypatch) -> None:
+    called_count = 0
+
+    def fake_refresh(now):
+        nonlocal called_count
+        called_count += 1
+        return {"status": "ok", "rows_added": {"BTCUSDT": 1}, "errors": {}}
+
+    monkeypatch.setattr("src.refresh.refresh_data", fake_refresh)
+    monkeypatch.setattr(
+        "src.refresh.refresh_state",
+        lambda *a, **k: {"allowed": True, "reason": "ok", "message": "Refresh allowed"},
+    )
+
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+    assert at.sidebar.button[0].disabled is False
+
+    at.sidebar.button[0].click().run()
+    assert len(at.exception) == 0
+    assert called_count == 1
+    assert any("refreshed successfully" in s.value for s in at.success)
+
+
+@skip_if_prereqs_missing
+def test_app_refresh_cooldown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.refresh.refresh_state",
+        lambda *a, **k: {
+            "allowed": False,
+            "reason": "cooldown",
+            "next_allowed_utc": "2026-10-24 15:30:00 UTC",
+            "message": "Next refresh possible at 2026-10-24 15:30:00 UTC",
+        },
+    )
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+    assert at.sidebar.button[0].disabled is True
+    assert any("Next refresh possible at" in c.value for c in at.sidebar.caption)
+
+
+@skip_if_prereqs_missing
+def test_app_refresh_failed(monkeypatch) -> None:
+    def fake_refresh_fail(now):
+        return {"status": "failed", "rows_added": {}, "errors": {"BTCUSDT": "Connection error"}}
+
+    monkeypatch.setattr("src.refresh.refresh_data", fake_refresh_fail)
+    monkeypatch.setattr(
+        "src.refresh.refresh_state",
+        lambda *a, **k: {"allowed": True, "reason": "ok", "message": "Refresh allowed"},
+    )
+
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    at.sidebar.button[0].click().run()
+    assert len(at.exception) == 0
+    assert any("Data refresh failed" in err.value for err in at.error)
+    # App still renders calculator metrics
+    assert any("Recommended Haircut" in m.label for m in at.metric)
+
+
+@skip_if_prereqs_missing
+def test_app_never_calls_train_model(monkeypatch) -> None:
+    def raise_on_train(*a, **k):
+        raise AssertionError("train_model should never be called by app")
+
+    monkeypatch.setattr("src.train.train_model", raise_on_train)
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    assert len(at.exception) == 0
+    assert any("Recommended Haircut" in m.label for m in at.metric)
+
+
+
 

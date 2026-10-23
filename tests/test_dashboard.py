@@ -20,8 +20,10 @@ from src.dashboard import (
     evaluation_tables,
     latest_crossing,
     load_results,
+    newer_data_days,
     risk_band,
     test_period_start,
+    training_cutoff,
 )
 from src.predict import to_haircut
 from src.split import prepare_horizon_table, split_by_date
@@ -213,18 +215,41 @@ def test_baseline_haircuts() -> None:
 
     ht = prepare_horizon_table(features, DEFAULT_HORIZON_DAYS)
     split = split_by_date(ht, DEFAULT_HORIZON_DAYS, TEST_FRACTION)
+    train_end_date = split.train["date"].max()
 
     expected_static = float(to_haircut(static_quantile(split.train, DEFAULT_CONFIDENCE)))
     hist_quantiles = historical_quantiles(split.train, DEFAULT_CONFIDENCE)
     expected_hist = float(to_haircut(hist_quantiles["BTC_TEST"]))
 
-    res = baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "BTC_TEST")
+    res = baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "BTC_TEST", train_end_date)
 
     assert res["static"] == pytest.approx(expected_static)
     assert res["historical"] == pytest.approx(expected_hist)
 
+    # Key consistency test: appending newer rows to features table does NOT change baselines
+    extra_dates = pd.date_range(start=features["date"].max() + pd.Timedelta(days=1), periods=10, freq="D")
+    extra_rows = pd.DataFrame({
+        "asset": "BTC_TEST",
+        "asset_class": "crypto",
+        "date": extra_dates,
+        VOLATILITY_COL: 0.05,
+        VOLUME_COL: 200000.0,
+        f"target_{DEFAULT_HORIZON_DAYS}d": -0.15,
+    })
+    extended_features = pd.concat([features, extra_rows], ignore_index=True)
+
+    res_extended = baseline_haircuts(
+        extended_features,
+        DEFAULT_HORIZON_DAYS,
+        DEFAULT_CONFIDENCE,
+        "BTC_TEST",
+        train_end_date,
+    )
+    assert res_extended["static"] == pytest.approx(expected_static)
+    assert res_extended["historical"] == pytest.approx(expected_hist)
+
     with pytest.raises(ValueError, match="Asset 'NONEXISTENT' not found"):
-        baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "NONEXISTENT")
+        baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "NONEXISTENT", train_end_date)
 
 
 def test_risk_band() -> None:
@@ -336,8 +361,10 @@ def test_functions_do_not_mutate_inputs_or_write_files(tmp_path) -> None:
     files_before = set(os.listdir(tmp_path))
 
     _ = calculator_result(bundle, features, "BTC_TEST", 1000.0)
-    _ = baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "BTC_TEST")
+    _ = baseline_haircuts(features, DEFAULT_HORIZON_DAYS, DEFAULT_CONFIDENCE, "BTC_TEST", bundle["train_end_date"])
     _ = risk_band(bundle, features, prices, "BTC_TEST", DEFAULT_HORIZON_DAYS, lookback_days=30)
+    _ = training_cutoff(bundle)
+    _ = newer_data_days(bundle, features)
     _ = test_period_start(features, DEFAULT_HORIZON_DAYS)
     _ = evaluation_tables(results, "h7_c95")
 
@@ -386,4 +413,25 @@ def test_latest_crossing() -> None:
     features_copy = features.copy(deep=True)
     _ = latest_crossing(crossing_bundles, features, "BTC_TEST")
     pd.testing.assert_frame_equal(features, features_copy)
+
+
+def test_training_cutoff() -> None:
+    bundle = {"train_end_date": "2026-08-15"}
+    assert training_cutoff(bundle) == pd.Timestamp("2026-08-15")
+
+    with pytest.raises(KeyError, match="train_end_date"):
+        training_cutoff({})
+
+
+def test_newer_data_days() -> None:
+    bundle = {"train_end_date": "2026-08-15"}
+    dates = pd.date_range("2026-08-01", "2026-10-15", freq="D")
+    df = pd.DataFrame({"date": dates})
+
+    # Difference between 2026-10-15 and 2026-08-15 is 61 days
+    assert newer_data_days(bundle, df) == 61
+
+    # Empty df returns 0
+    assert newer_data_days(bundle, pd.DataFrame()) == 0
+
 

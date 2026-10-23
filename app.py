@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -17,7 +18,11 @@ from src.config import (
     HORIZONS_DAYS,
     MODELS_DIR,
     PROCESSED_DIR,
+    RAW_DIR,
+    REFRESH_MIN_INTERVAL_MINUTES,
+    REFRESH_STATUS_PATH,
     RESULTS_PATH,
+    RETRAIN_SUGGEST_AFTER_DAYS,
 )
 from src.dashboard import (
     baseline_haircuts,
@@ -25,13 +30,22 @@ from src.dashboard import (
     evaluation_tables,
     latest_crossing,
     load_results,
+    newer_data_days,
     risk_band,
-    test_period_start,
+    training_cutoff,
+)
+from src.refresh import (
+    latest_saved_candle,
+    read_status,
+    refresh_data,
+    refresh_state,
 )
 import src.train as train
 from src.train import config_key, model_path
 
 st.set_page_config(page_title="Salooan", layout="wide")
+
+now = datetime.now(timezone.utc)
 
 st.title("Salooan")
 st.markdown(
@@ -120,6 +134,63 @@ except FileNotFoundError as err:
 
 features = get_features()
 
+# Data refresh section in sidebar
+st.sidebar.markdown("---")
+st.sidebar.subheader("Data")
+
+crypto_latest = latest_saved_candle(RAW_DIR, CRYPTO_ASSETS)
+st.sidebar.text(f"Latest crypto candle: {crypto_latest if crypto_latest else 'None'}")
+
+refresh_status = read_status(REFRESH_STATUS_PATH)
+last_success = refresh_status.get("last_success_utc")
+last_success_str = str(last_success)[:19].replace("T", " ") if last_success else "Never"
+st.sidebar.text(f"Last success (UTC): {last_success_str}")
+
+r_state = refresh_state(now, crypto_latest, refresh_status, REFRESH_MIN_INTERVAL_MINUTES)
+refresh_disabled = not r_state["allowed"]
+
+if st.sidebar.button("Refresh data", disabled=refresh_disabled):
+    with st.spinner("Refreshing market data..."):
+        res = refresh_data(now)
+        st.session_state["refresh_res"] = res
+        if res.get("status") in ("ok", "partial"):
+            st.cache_data.clear()
+        st.rerun()
+
+if refresh_disabled:
+    st.sidebar.caption(r_state["message"])
+
+# Retraining suggestion if features are substantially newer than bundle train_end_date
+days_newer = newer_data_days(bundle, features)
+if days_newer > RETRAIN_SUGGEST_AFTER_DAYS:
+    st.sidebar.info(
+        f"Features contain data {days_newer} days newer than the model training cutoff ({bundle['train_end_date']}).\n\n"
+        "Retraining recommended:\n"
+        "`python -m src.train`\n"
+        "`python -m src.evaluate`"
+    )
+
+# Display stored refresh result message
+if "refresh_res" in st.session_state:
+    res = st.session_state.pop("refresh_res")
+    status = res.get("status")
+    rows = res.get("rows_added", {})
+    errors = res.get("errors", {})
+    if status == "ok":
+        rows_str = ", ".join(f"{k}: +{v}" for k, v in rows.items())
+        st.success(f"Data refreshed successfully! Rows added: {rows_str}")
+    elif status == "partial":
+        rows_str = ", ".join(f"{k}: +{v}" for k, v in rows.items())
+        err_str = "; ".join(f"{k}: {v}" for k, v in errors.items())
+        st.warning(f"Data refresh completed with errors. Rows added: {rows_str}. Errors: {err_str}")
+    elif status == "failed":
+        err_str = "; ".join(f"{k}: {v}" for k, v in errors.items()) if errors else res.get("error", "Unknown error")
+        st.error(f"Data refresh failed: {err_str}")
+    elif status == "already_running":
+        st.info("A data refresh is already running.")
+    elif status == "nothing_new":
+        st.info("Data is already up to date. No new candles found.")
+
 tab_calc, tab_eval = st.tabs(["Haircut calculator", "Evaluation"])
 
 with tab_calc:
@@ -165,6 +236,7 @@ with tab_calc:
         selected_horizon,
         selected_confidence,
         selected_asset,
+        bundle["train_end_date"],
     )
     hc_df = pd.DataFrame({
         "Method": ["Dynamic Model", "Historical Baseline", "Static Baseline"],
@@ -200,7 +272,7 @@ with tab_calc:
         selected_horizon,
         lookback_days=365,
     )
-    t_start = test_period_start(features, selected_horizon)
+    t_cutoff = training_cutoff(bundle)
 
     fig_risk = go.Figure()
     fig_risk.add_trace(go.Scatter(
@@ -218,12 +290,12 @@ with tab_calc:
         line=dict(color="#dc2626", width=1.5, dash="dash"),
     ))
 
-    t_start_date = str(pd.to_datetime(t_start).date())
+    t_cutoff_date = str(t_cutoff.date())
     fig_risk.add_vline(
-        x=t_start_date,
+        x=t_cutoff_date,
         line_dash="dot",
         line_color="#64748b",
-        annotation_text="Out-of-sample Start",
+        annotation_text="model trained on data up to this date; everything after it is out-of-sample",
         annotation_position="top left",
     )
     fig_risk.update_layout(
@@ -244,6 +316,8 @@ with tab_calc:
     )
 
 with tab_eval:
+    st.caption("Evaluation reflects the last python -m src.evaluate run, with its own test_start.")
+
     results = get_results()
     if results is None:
         st.warning(

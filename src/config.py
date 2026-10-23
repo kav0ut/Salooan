@@ -10,6 +10,13 @@ MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 FEATURES_PATH = os.path.join(PROCESSED_DIR, "features.parquet")
 RESULTS_PATH = os.path.join(RESULTS_DIR, "results.json")
+REFRESH_STATUS_PATH = os.path.join(PROCESSED_DIR, "refresh_status.json")
+REFRESH_LOCK_PATH = os.path.join(PROCESSED_DIR, "refresh.lock")
+
+# Refresh and retraining limits
+REFRESH_MIN_INTERVAL_MINUTES = 60
+REFRESH_LOCK_TIMEOUT_MINUTES = 15
+RETRAIN_SUGGEST_AFTER_DAYS = 60
 
 # Asset definitions
 CRYPTO_ASSETS = ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOGEUSDT"]

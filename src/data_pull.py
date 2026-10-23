@@ -127,7 +127,7 @@ def save_raw_df(df: pd.DataFrame, symbol: str) -> None:
     os.replace(temp_path, final_path)
 
 
-def update_asset(symbol: str) -> None:
+def update_asset(symbol: str) -> int:
     symbol_upper = symbol.upper()
     parquet_path = os.path.join(RAW_DIR, f"{symbol_upper}.parquet")
 
@@ -161,7 +161,7 @@ def update_asset(symbol: str) -> None:
 
     if new_df.empty:
         print(f"{symbol_upper}: No new data to add.")
-        return
+        return 0
 
     # Combine with existing data (if any)
     if os.path.exists(parquet_path) and os.path.getsize(parquet_path) > 0:
@@ -181,6 +181,7 @@ def update_asset(symbol: str) -> None:
 
     rows_added = len(new_df)
     print(f"{symbol_upper}: Added {rows_added} new rows.")
+    return rows_added
 
 
 def main() -> None:
