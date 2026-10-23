@@ -189,7 +189,7 @@ One commit per milestone.
 The end of Milestone 5 is the minimum demoable checkpoint (the user will tag it `v0.1-minimal-demo`).
 
 ## Current Focus
-Milestones 0-10 complete (Milestone 10 ready to commit: `feat: add monotonic risk band and monthly breach analysis`). Spec in `MILESTONES/MILESTONE_10.md`.
+Milestones 0-11 complete (Milestone 11 ready to commit: `docs: write README with results`). Spec in `MILESTONES/MILESTONE_11.md`.
 
 `MILESTONES/` is the source of truth for milestone status and scope; update it there first and keep this section in step with it.
 
